@@ -67,10 +67,10 @@ Resource families:
   account      balance
 
 Shared task verbs (where the API supports them):
-  create | get | list | delete | wait | download
+  create [--sync] [--download] | get | list | delete | wait/sync | assets | download
 
-Async idiom: create returns a task id → wait/poll until SUCCEEDED|FAILED|CANCELED →
-download model_urls / assets. Assets are retained ~3 days on free tiers.
+Async idiom: create returns a task id → --sync waits until SUCCEEDED|FAILED|CANCELED →
+assets lists downloadable URLs → download saves them. Assets are retained ~3 days.
 
 Config precedence: --flag > environment > SQLite store (~/.config/meshy/meshy.db).
 Local sessions and tags track batches of jobs you create without re-scraping remote IDs.
@@ -78,7 +78,11 @@ Local sessions and tags track batches of jobs you create without re-scraping rem
 Examples:
   meshy config set api_key msy_...
   meshy session open my-batch
-  meshy text-to-3d create-preview --prompt "a coffee mug" --wait
+  meshy text-to-3d create-preview --prompt "a coffee mug" --sync --download
+  meshy text-to-image models
+  meshy text-to-image create --ai-model nano-banana --prompt "dragon" --sync
+  meshy text-to-image assets <id>
+  meshy text-to-image download <id> --all -o ./out
   meshy tasks list --session my-batch
   meshy balance get --json`,
 		SilenceUsage:  true,

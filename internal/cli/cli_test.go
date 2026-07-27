@@ -284,10 +284,146 @@ func TestHelpListsResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	sub := buf.String()
-	for _, want := range []string{"create", "get", "list", "delete", "wait", "download"} {
+	for _, want := range []string{"create", "get", "list", "delete", "wait", "download", "assets"} {
 		if !strings.Contains(sub, want) {
 			t.Errorf("image-to-3d help missing %q\n%s", want, sub)
 		}
+	}
+}
+
+func TestAssetsAndDownload(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	assetURL := srv.URL + "/files/image.png"
+	mux.HandleFunc("GET /openapi/v1/text-to-image/img-1", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":         "img-1",
+			"status":     "SUCCEEDED",
+			"image_urls": []any{assetURL},
+		})
+	})
+	mux.HandleFunc("GET /files/image.png", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("PNGDATA"))
+	})
+
+	dbPath := filepath.Join(t.TempDir(), "a.db")
+	outDir := filepath.Join(t.TempDir(), "dl")
+
+	var out bytes.Buffer
+	app := &cli.App{Print: &cli.Printer{JSON: true, Out: &out, Err: io.Discard}}
+	if err := cli.ExecuteWithApp(app, []string{
+		"--api-key", "k", "--base-url", srv.URL, "--db", dbPath, "--json",
+		"text-to-image", "assets", "img-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var listed map[string]any
+	if err := json.Unmarshal(out.Bytes(), &listed); err != nil {
+		t.Fatalf("assets json: %v %s", err, out.String())
+	}
+	assets, ok := listed["assets"].([]any)
+	if !ok || len(assets) < 1 {
+		t.Fatalf("assets payload: %s", out.String())
+	}
+
+	out.Reset()
+	app2 := &cli.App{Print: &cli.Printer{JSON: true, Out: &out, Err: io.Discard}}
+	if err := cli.ExecuteWithApp(app2, []string{
+		"--api-key", "k", "--base-url", srv.URL, "--db", dbPath, "--json",
+		"text-to-image", "download", "img-1", "--all", "-o", outDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var dl map[string]any
+	if err := json.Unmarshal(out.Bytes(), &dl); err != nil {
+		t.Fatal(err)
+	}
+	files, ok := dl["files"].(map[string]any)
+	if !ok || len(files) < 1 {
+		t.Fatalf("download: %s", out.String())
+	}
+	for _, p := range files {
+		path, _ := p.(string)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != "PNGDATA" {
+			t.Fatalf("file content %q", b)
+		}
+	}
+}
+
+func TestCreateSyncDownload(t *testing.T) {
+	var gets atomic.Int32
+	mux := http.NewServeMux()
+	var srvURL string
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	srvURL = srv.URL
+
+	mux.HandleFunc("POST /openapi/v1/image-to-3d", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"result": "sync-1"})
+	})
+	mux.HandleFunc("GET /openapi/v1/image-to-3d/sync-1", func(w http.ResponseWriter, r *http.Request) {
+		n := gets.Add(1)
+		status := "IN_PROGRESS"
+		if n >= 2 {
+			status = "SUCCEEDED"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "sync-1",
+			"status": status,
+			"model_urls": map[string]any{
+				"glb": srvURL + "/m.glb",
+			},
+		})
+	})
+	mux.HandleFunc("GET /m.glb", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("GLB"))
+	})
+
+	dbPath := filepath.Join(t.TempDir(), "s.db")
+	outDir := filepath.Join(t.TempDir(), "out")
+	var out bytes.Buffer
+	app := &cli.App{Print: &cli.Printer{JSON: true, Out: &out, Err: io.Discard}}
+	if err := cli.ExecuteWithApp(app, []string{
+		"--api-key", "k", "--base-url", srv.URL, "--db", dbPath, "--json",
+		"--poll-interval", "1ms",
+		"image-to-3d", "create",
+		"--image-url", "https://x/a.png",
+		"--sync", "--download", "-o", outDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("%v %s", err, out.String())
+	}
+	files, ok := payload["files"].(map[string]any)
+	if !ok || len(files) < 1 {
+		t.Fatalf("expected files in %s", out.String())
+	}
+	_ = srvURL
+}
+
+func TestImageModelsCatalog(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "m.db")
+	var out bytes.Buffer
+	app := &cli.App{Print: &cli.Printer{JSON: true, Out: &out, Err: io.Discard}}
+	if err := cli.ExecuteWithApp(app, []string{
+		"--db", dbPath, "--json",
+		"text-to-image", "models",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) < 3 {
+		t.Fatalf("models = %s", out.String())
 	}
 }
 

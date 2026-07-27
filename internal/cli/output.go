@@ -89,14 +89,14 @@ func (p *Printer) printTask(t api.Task) error {
 	if msg := t.TaskErrorMessage(); msg != "" {
 		fmt.Fprintf(p.Out, "error:    %s\n", msg)
 	}
-	if urls := t.ModelURLs(); len(urls) > 0 {
-		fmt.Fprintln(p.Out, "model_urls:")
-		for k, u := range urls {
-			fmt.Fprintf(p.Out, "  %s: %s\n", k, u)
+	if assets := t.Assets(); len(assets) > 0 {
+		fmt.Fprintln(p.Out, "assets:")
+		for _, a := range assets {
+			fmt.Fprintf(p.Out, "  %-24s  %-10s  %s\n", a.Name, a.Kind, a.URL)
 		}
 	}
 	// Common extra fields
-	for _, key := range []string{"thumbnail_url", "prompt", "mode", "created_at", "finished_at"} {
+	for _, key := range []string{"prompt", "mode", "ai_model", "created_at", "finished_at", "expires_at"} {
 		if v, ok := t[key]; ok && v != nil {
 			fmt.Fprintf(p.Out, "%s: %v\n", key, v)
 		}

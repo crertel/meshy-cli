@@ -18,8 +18,11 @@ func (app *App) resourceCmd(res api.Resource) *cobra.Command {
 		Long: fmt.Sprintf(`%s
 
 API path: %s
-Workflow: create → get/list → wait (poll until terminal) → download model_urls.
-Statuses: PENDING → IN_PROGRESS → SUCCEEDED | FAILED | CANCELED`, res.Description, res.Path),
+Workflow: create [--sync] → get | assets | wait | download
+Statuses: PENDING → IN_PROGRESS → SUCCEEDED | FAILED | CANCELED
+
+Use --sync (or --wait) on create to block until the job finishes.
+Use assets to list downloadable URLs; download to save them locally.`, res.Description, res.Path),
 	}
 
 	if len(res.CreateModes) > 0 {
@@ -37,22 +40,37 @@ Statuses: PENDING → IN_PROGRESS → SUCCEEDED | FAILED | CANCELED`, res.Descri
 		cmd.AddCommand(app.deleteCmd(res))
 	}
 	cmd.AddCommand(app.waitCmd(res))
+	cmd.AddCommand(app.assetsCmd(res))
 	cmd.AddCommand(app.downloadCmd(res))
+	// Static catalogs for resources that take model/action ids
+	if res.Name == "text-to-image" || res.Name == "image-to-image" {
+		cmd.AddCommand(app.imageModelsCmd(res))
+	}
+	if res.Name == "animation" {
+		cmd.AddCommand(app.animationLibraryCmd())
+	}
 	return cmd
 }
 
+type createOpts struct {
+	bodyFile string
+	bodyJSON string
+	sync     bool
+	download bool
+	outDir   string
+}
+
 func (app *App) createPlainCmd(res api.Resource) *cobra.Command {
-	var (
-		bodyFile string
-		bodyJSON string
-		wait     bool
-	)
+	var opts createOpts
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create a " + res.Name + " task",
-		Long:  `Create a task. Pass JSON via --body/--body-file and/or convenience flags.`,
+		Long: `Create a task. Pass JSON via --body/--body-file and/or convenience flags.
+
+--sync / --wait: do not exit until the task reaches a terminal status.
+--download: after a successful sync wait, download all assets (implies --sync).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			body, err := parseBody(bodyFile, bodyJSON)
+			body, err := parseBody(opts.bodyFile, opts.bodyJSON)
 			if err != nil {
 				return err
 			}
@@ -62,27 +80,23 @@ func (app *App) createPlainCmd(res api.Resource) *cobra.Command {
 			if err := mergeCreateFlags(cmd, body); err != nil {
 				return err
 			}
-			return app.runCreate(res, body, wait)
+			return app.runCreate(res, body, opts)
 		},
 	}
-	cmd.Flags().StringVar(&bodyJSON, "body", "", "JSON request body")
-	cmd.Flags().StringVar(&bodyFile, "body-file", "", "Path to JSON request body file")
-	cmd.Flags().BoolVar(&wait, "wait", false, "Poll until terminal status")
+	cmd.Flags().StringVar(&opts.bodyJSON, "body", "", "JSON request body")
+	cmd.Flags().StringVar(&opts.bodyFile, "body-file", "", "Path to JSON request body file")
+	addSyncDownloadFlags(cmd, &opts)
 	addCommonCreateFlags(cmd)
 	return cmd
 }
 
 func (app *App) createModeCmd(res api.Resource, mode string) *cobra.Command {
-	var (
-		bodyFile string
-		bodyJSON string
-		wait     bool
-	)
+	var opts createOpts
 	cmd := &cobra.Command{
 		Use:   "create-" + mode,
 		Short: "Create a " + res.Name + " " + mode + " task",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			body, err := parseBody(bodyFile, bodyJSON)
+			body, err := parseBody(opts.bodyFile, opts.bodyJSON)
 			if err != nil {
 				return err
 			}
@@ -93,14 +107,21 @@ func (app *App) createModeCmd(res api.Resource, mode string) *cobra.Command {
 			if err := mergeCreateFlags(cmd, body); err != nil {
 				return err
 			}
-			return app.runCreate(res, body, wait)
+			return app.runCreate(res, body, opts)
 		},
 	}
-	cmd.Flags().StringVar(&bodyJSON, "body", "", "JSON request body")
-	cmd.Flags().StringVar(&bodyFile, "body-file", "", "Path to JSON request body file")
-	cmd.Flags().BoolVar(&wait, "wait", false, "Poll until terminal status")
+	cmd.Flags().StringVar(&opts.bodyJSON, "body", "", "JSON request body")
+	cmd.Flags().StringVar(&opts.bodyFile, "body-file", "", "Path to JSON request body file")
+	addSyncDownloadFlags(cmd, &opts)
 	addCommonCreateFlags(cmd)
 	return cmd
+}
+
+func addSyncDownloadFlags(cmd *cobra.Command, opts *createOpts) {
+	cmd.Flags().BoolVar(&opts.sync, "sync", false, "Block until the task finishes (same as --wait)")
+	cmd.Flags().BoolVar(&opts.sync, "wait", false, "Alias for --sync")
+	cmd.Flags().BoolVar(&opts.download, "download", false, "After success, download assets (implies --sync)")
+	cmd.Flags().StringVarP(&opts.outDir, "output", "o", "", "Directory for --download (default: <task-id>)")
 }
 
 func addCommonCreateFlags(cmd *cobra.Command) {
@@ -193,10 +214,11 @@ func parseBody(file, raw string) (map[string]any, error) {
 	return m, nil
 }
 
-func (app *App) runCreate(res api.Resource, body map[string]any, wait bool) error {
+func (app *App) runCreate(res api.Resource, body map[string]any, opts createOpts) error {
 	if err := RequireAPIKey(app.Client.APIKey); err != nil {
 		return err
 	}
+	sync := opts.sync || opts.download
 	id, err := app.Client.Create(app.ctx(), res.Path, body)
 	if err != nil {
 		return err
@@ -204,9 +226,41 @@ func (app *App) runCreate(res api.Resource, body map[string]any, wait bool) erro
 	if err := app.trackTask(res.Name, id, res.TaskPath(id), "PENDING"); err != nil {
 		return fmt.Errorf("track task: %w", err)
 	}
-	if !wait {
+	if !sync {
 		return app.Print.PrintCreate(id, map[string]any{"resource": res.Name})
 	}
+	t, err := app.waitForTask(res, id)
+	if err != nil {
+		return err
+	}
+	if opts.download {
+		if t.Status() != "SUCCEEDED" {
+			_ = app.Print.PrintAny(t)
+			return fmt.Errorf("task %s finished with status %s; nothing to download", id, t.Status())
+		}
+		saved, err := app.downloadTaskAssets(res, id, t, downloadOpts{
+			outDir: opts.outDir,
+			all:    true,
+		})
+		if err != nil {
+			return err
+		}
+		if app.JSON {
+			return app.Print.JSONValue(map[string]any{
+				"task":  t,
+				"files": saved,
+			})
+		}
+		_ = app.Print.PrintAny(t)
+		for k, p := range saved {
+			fmt.Fprintf(app.Print.Out, "saved %s → %s\n", k, p)
+		}
+		return nil
+	}
+	return app.Print.PrintAny(t)
+}
+
+func (app *App) waitForTask(res api.Resource, id string) (api.Task, error) {
 	t, err := app.Client.Wait(app.ctx(), res.TaskPath(id), api.WaitOptions{
 		Interval: app.PollEvery,
 		Timeout:  app.WaitTimeout,
@@ -223,12 +277,13 @@ func (app *App) runCreate(res api.Resource, body map[string]any, wait bool) erro
 		fmt.Fprintln(os.Stderr)
 	}
 	if err != nil {
-		return err
+		return t, err
 	}
 	if app.Store != nil {
 		_ = app.Store.UpdateTaskStatus(id, t.Status())
 	}
-	return app.Print.PrintAny(t)
+	_ = app.trackTask(res.Name, id, res.TaskPath(id), t.Status())
+	return t, nil
 }
 
 func (app *App) getCmd(res api.Resource) *cobra.Command {
@@ -296,104 +351,129 @@ func (app *App) deleteCmd(res api.Resource) *cobra.Command {
 
 func (app *App) waitCmd(res api.Resource) *cobra.Command {
 	return &cobra.Command{
-		Use:   "wait <task-id>",
-		Short: "Poll until " + res.Name + " task is terminal",
-		Args:  cobra.ExactArgs(1),
+		Use:     "wait <task-id>",
+		Aliases: []string{"sync"},
+		Short:   "Poll until " + res.Name + " task is terminal",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := RequireAPIKey(app.Client.APIKey); err != nil {
 				return err
 			}
-			id := args[0]
-			t, err := app.Client.Wait(app.ctx(), res.TaskPath(id), api.WaitOptions{
-				Interval: app.PollEvery,
-				Timeout:  app.WaitTimeout,
-				OnUpdate: func(task api.Task) {
-					if !app.JSON {
-						fmt.Fprintf(os.Stderr, "\rstatus=%s progress=%v   ", task.Status(), task.Progress())
-					}
-					if app.Store != nil {
-						_ = app.Store.UpdateTaskStatus(id, task.Status())
-					}
-				},
-			})
-			if !app.JSON {
-				fmt.Fprintln(os.Stderr)
-			}
+			t, err := app.waitForTask(res, args[0])
 			if err != nil {
 				return err
 			}
-			_ = app.trackTask(res.Name, id, res.TaskPath(id), t.Status())
 			return app.Print.PrintAny(t)
 		},
 	}
 }
 
-func (app *App) downloadCmd(res api.Resource) *cobra.Command {
+func (app *App) assetsCmd(res api.Resource) *cobra.Command {
 	var (
-		outDir string
-		format string
-		all    bool
+		kind string
+		wait bool
 	)
 	cmd := &cobra.Command{
-		Use:   "download <task-id>",
-		Short: "Download model_urls for a succeeded " + res.Name + " task",
-		Args:  cobra.ExactArgs(1),
+		Use:   "assets <task-id>",
+		Short: "List downloadable assets on a " + res.Name + " task",
+		Long: `List asset names, kinds, and URLs available on the task payload.
+
+Works for model_urls (3D), image_urls (text/image-to-image), nested result.*
+URLs (rigging/animation), thumbnails, and textures.
+
+Use the name column with:  meshy ` + res.Name + ` download <id> --name <name>`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := RequireAPIKey(app.Client.APIKey); err != nil {
 				return err
 			}
 			id := args[0]
-			t, err := app.Client.Get(app.ctx(), res.TaskPath(id))
+			var t api.Task
+			var err error
+			if wait {
+				t, err = app.waitForTask(res, id)
+			} else {
+				t, err = app.Client.Get(app.ctx(), res.TaskPath(id))
+			}
 			if err != nil {
 				return err
 			}
-			urls := t.ModelURLs()
-			if len(urls) == 0 {
-				urls = extractAssetURLs(t)
+			assets := api.FilterAssets(t.Assets(), "", kind)
+			if app.JSON {
+				return app.Print.JSONValue(map[string]any{
+					"task_id": id,
+					"status":  t.Status(),
+					"assets":  assets,
+				})
 			}
-			if len(urls) == 0 {
-				return fmt.Errorf("no downloadable URLs on task %s (status=%s)", id, t.Status())
+			if len(assets) == 0 {
+				fmt.Fprintf(app.Print.Out, "no assets on task %s (status=%s)\n", id, t.Status())
+				return nil
 			}
-			if outDir == "" {
-				outDir = id
+			fmt.Fprintf(app.Print.Out, "task %s  status=%s  %d asset(s)\n", id, t.Status(), len(assets))
+			for _, a := range assets {
+				fmt.Fprintf(app.Print.Out, "  %-28s  %-10s  %s\n", a.Name, a.Kind, a.URL)
 			}
-			if err := os.MkdirAll(outDir, 0o755); err != nil {
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&kind, "kind", "", "Filter by kind: model, image, texture, animation, other")
+	cmd.Flags().BoolVar(&wait, "sync", false, "Wait for terminal status before listing")
+	cmd.Flags().BoolVar(&wait, "wait", false, "Alias for --sync")
+	return cmd
+}
+
+type downloadOpts struct {
+	outDir string
+	name   string
+	format string // alias of name
+	kind   string
+	all    bool
+	wait   bool
+}
+
+func (app *App) downloadCmd(res api.Resource) *cobra.Command {
+	var opts downloadOpts
+	cmd := &cobra.Command{
+		Use:   "download <task-id>",
+		Short: "Download assets from a " + res.Name + " task",
+		Long: `Download task assets to disk.
+
+Discovers URLs from model_urls, image_urls, nested result fields, thumbnails, etc.
+Use assets first to see names:
+
+  meshy ` + res.Name + ` assets <task-id>
+  meshy ` + res.Name + ` download <task-id> --all
+  meshy ` + res.Name + ` download <task-id> --name glb
+  meshy ` + res.Name + ` download <task-id> --kind image -o ./out
+
+Default without filters: downloads glb if present, otherwise all assets.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := RequireAPIKey(app.Client.APIKey); err != nil {
 				return err
 			}
-			saved := map[string]string{}
-			_, hasGLB := urls["glb"]
-			for fmtName, u := range urls {
-				if !all && format != "" && !strings.EqualFold(fmtName, format) {
-					continue
-				}
-				if !all && format == "" && hasGLB && fmtName != "glb" && len(urls) > 1 {
-					continue
-				}
-				data, err := app.Client.Download(app.ctx(), u)
-				if err != nil {
-					return fmt.Errorf("download %s: %w", fmtName, err)
-				}
-				ext := fmtName
-				if !strings.Contains(ext, ".") {
-					ext = "." + ext
-				} else {
-					ext = ""
-				}
-				path := filepath.Join(outDir, id+ext)
-				if err := os.WriteFile(path, data, 0o644); err != nil {
-					return err
-				}
-				saved[fmtName] = path
+			id := args[0]
+			var t api.Task
+			var err error
+			if opts.wait {
+				t, err = app.waitForTask(res, id)
+			} else {
+				t, err = app.Client.Get(app.ctx(), res.TaskPath(id))
 			}
-			if len(saved) == 0 {
-				ks := make([]string, 0, len(urls))
-				for k := range urls {
-					ks = append(ks, k)
-				}
-				return fmt.Errorf("no formats matched (available: %v)", ks)
+			if err != nil {
+				return err
+			}
+			// format is alias for name
+			if opts.name == "" {
+				opts.name = opts.format
+			}
+			saved, err := app.downloadTaskAssets(res, id, t, opts)
+			if err != nil {
+				return err
 			}
 			if app.JSON {
-				return app.Print.JSONValue(map[string]any{"task_id": id, "files": saved})
+				return app.Print.JSONValue(map[string]any{"task_id": id, "status": t.Status(), "files": saved})
 			}
 			for k, p := range saved {
 				fmt.Fprintf(app.Print.Out, "saved %s → %s\n", k, p)
@@ -401,34 +481,127 @@ func (app *App) downloadCmd(res api.Resource) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&outDir, "output", "o", "", "Output directory (default: task id)")
-	cmd.Flags().StringVar(&format, "format", "", "Single format key from model_urls (e.g. glb, fbx)")
-	cmd.Flags().BoolVar(&all, "all", false, "Download all available formats")
+	cmd.Flags().StringVarP(&opts.outDir, "output", "o", "", "Output directory (default: task id)")
+	cmd.Flags().StringVar(&opts.name, "name", "", "Asset name to download (see assets command)")
+	cmd.Flags().StringVar(&opts.format, "format", "", "Alias for --name (e.g. glb, fbx, image_0)")
+	cmd.Flags().StringVar(&opts.kind, "kind", "", "Download all assets of kind (model, image, ...)")
+	cmd.Flags().BoolVar(&opts.all, "all", false, "Download every available asset")
+	cmd.Flags().BoolVar(&opts.wait, "sync", false, "Wait for terminal status before downloading")
+	cmd.Flags().BoolVar(&opts.wait, "wait", false, "Alias for --sync")
 	return cmd
 }
 
-func extractAssetURLs(t api.Task) map[string]string {
-	out := map[string]string{}
-	if u, ok := t["image_url"].(string); ok && u != "" {
-		out["image"] = u
+func (app *App) downloadTaskAssets(res api.Resource, id string, t api.Task, opts downloadOpts) (map[string]string, error) {
+	assets := t.Assets()
+	if len(assets) == 0 {
+		return nil, fmt.Errorf("no downloadable assets on task %s (status=%s); try: meshy %s assets %s", id, t.Status(), res.Name, id)
 	}
-	if arr, ok := t["image_urls"].([]any); ok {
-		for i, v := range arr {
-			if s, ok := v.(string); ok {
-				out[fmt.Sprintf("image_%d", i)] = s
-			}
+
+	var selected []api.Asset
+	switch {
+	case opts.all || opts.kind != "" || opts.name != "":
+		selected = api.FilterAssets(assets, opts.name, opts.kind)
+	default:
+		// Prefer glb when present; else download everything (images, etc.)
+		glb := api.FilterAssets(assets, "glb", "")
+		if len(glb) > 0 {
+			selected = glb
+		} else {
+			selected = assets
 		}
 	}
-	for _, key := range []string{"result", "output"} {
-		if nested, ok := t[key].(map[string]any); ok {
-			if mu, ok := nested["model_urls"].(map[string]any); ok {
-				for k, v := range mu {
-					if s, ok := v.(string); ok {
-						out[k] = s
-					}
+	if len(selected) == 0 {
+		names := make([]string, 0, len(assets))
+		for _, a := range assets {
+			names = append(names, a.Name)
+		}
+		return nil, fmt.Errorf("no assets matched filters (available: %s)", strings.Join(names, ", "))
+	}
+
+	outDir := opts.outDir
+	if outDir == "" {
+		outDir = id
+	}
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return nil, err
+	}
+
+	saved := map[string]string{}
+	for _, a := range selected {
+		data, err := app.Client.Download(app.ctx(), a.URL)
+		if err != nil {
+			return saved, fmt.Errorf("download %s: %w", a.Name, err)
+		}
+		path := filepath.Join(outDir, a.SuggestedFilename(id))
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			return saved, err
+		}
+		saved[a.Name] = path
+	}
+	return saved, nil
+}
+
+func (app *App) imageModelsCmd(res api.Resource) *cobra.Command {
+	return &cobra.Command{
+		Use:   "models",
+		Short: "List known ai_model values for " + res.Name,
+		Long:  `Static catalog of documented Meshy image ai_model IDs (from API docs). Pass with --ai-model or --body.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			type row struct {
+				ID          string `json:"id"`
+				Description string `json:"description"`
+			}
+			var rows []row
+			for _, m := range api.KnownImageModels {
+				rows = append(rows, row{ID: m.ID, Description: m.Description})
+			}
+			if app.JSON {
+				return app.Print.JSONValue(rows)
+			}
+			fmt.Fprintln(app.Print.Out, "Known ai_model values (from docs):")
+			for _, m := range rows {
+				fmt.Fprintf(app.Print.Out, "  %-18s  %s\n", m.ID, m.Description)
+			}
+			fmt.Fprintf(app.Print.Out, "\nExample:\n  meshy %s create --ai-model nano-banana --prompt \"...\" --sync\n", res.Name)
+			return nil
+		},
+	}
+}
+
+func (app *App) animationLibraryCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "library",
+		Short: "Fetch the public Meshy animation library (action_id catalog)",
+		Long:  `GET https://api.meshy.ai/web/public/animations/resources — use action_id values with animation create --action-id.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Public endpoint; still use client HTTP for injectability
+			base := app.Client.BaseURL
+			if base == "" {
+				base = api.DefaultBaseURL
+			}
+			url := strings.TrimRight(base, "/") + "/web/public/animations/resources"
+			// Animation catalog is on the main host, not always under openapi base only
+			if !strings.Contains(url, "api.meshy.ai") && app.Cfg.BaseURL != "" {
+				// keep as-is for mocks
+			}
+			data, err := app.Client.Download(app.ctx(), url)
+			if err != nil {
+				// fallback hard-coded public URL if base was openapi-only mock
+				data, err = app.Client.Download(app.ctx(), "https://api.meshy.ai/web/public/animations/resources")
+				if err != nil {
+					return fmt.Errorf("fetch animation library: %w", err)
 				}
 			}
-		}
+			if app.JSON {
+				// pass through raw JSON
+				var v any
+				if err := json.Unmarshal(data, &v); err != nil {
+					return err
+				}
+				return app.Print.JSONValue(v)
+			}
+			fmt.Fprintln(app.Print.Out, string(data))
+			return nil
+		},
 	}
-	return out
 }
