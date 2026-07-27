@@ -143,8 +143,9 @@ func addSyncDownloadFlags(cmd *cobra.Command, opts *createOpts) {
 }
 
 func addCommonCreateFlags(cmd *cobra.Command) {
+	// Inputs / prompts
 	cmd.Flags().String("prompt", "", "Text prompt")
-	cmd.Flags().String("negative-prompt", "", "Negative prompt")
+	cmd.Flags().String("negative-prompt", "", "Negative prompt (deprecated on most models)")
 	cmd.Flags().String("image-url", "", "Image URL, data URI, or local file path")
 	cmd.Flags().String("image-file", "", "Local image file (converted to data URI)")
 	cmd.Flags().StringSlice("image-urls", nil, "Multiple image URLs, data URIs, or local paths")
@@ -153,37 +154,65 @@ func addCommonCreateFlags(cmd *cobra.Command) {
 	cmd.Flags().String("model-url", "", "Input model URL or local path (data URI)")
 	cmd.Flags().String("input-task-id", "", "Upstream Meshy task id")
 	cmd.Flags().String("preview-task-id", "", "Preview task id (text-to-3d refine)")
+
+	// Model / mesh
 	cmd.Flags().String("ai-model", "", "AI model (latest, meshy-6, meshy-5, nano-banana, …)")
 	cmd.Flags().String("model-type", "", "Mesh type: standard | smart-topology | lowpoly")
-	cmd.Flags().Bool("should-texture", false, "Enable texturing")
-	cmd.Flags().Bool("enable-pbr", false, "Enable PBR maps")
-	cmd.Flags().String("texture-prompt", "", "Texture text prompt")
-	cmd.Flags().String("texture-image-url", "", "Texture image URL, data URI, or local file")
-	cmd.Flags().String("texture-image-file", "", "Local texture guide image file")
-	cmd.Flags().String("texture-resolution", "", "Base color resolution: 2k | 4k | 8k")
-	cmd.Flags().String("texture-richness", "", "Texture richness hint (e.g. high)")
-	cmd.Flags().StringSlice("target-formats", nil, "Output formats, CSV or repeatable (glb,fbx,obj,stl,usdz,3mf)")
-	cmd.Flags().String("target-format", "", "Deprecated: single format (prefer --target-formats)")
+	cmd.Flags().String("topology", "", "triangle | quad")
 	cmd.Flags().Int("target-polycount", 0, "Target polycount")
 	cmd.Flags().Int("decimation-mode", 0, "Adaptive decimation 1–4 (ultra…low)")
-	cmd.Flags().String("topology", "", "triangle | quad")
 	cmd.Flags().Bool("should-remesh", false, "Enable remesh phase")
 	cmd.Flags().Bool("save-pre-remeshed-model", false, "Also store pre-remesh GLB")
 	cmd.Flags().String("pose-mode", "", "a-pose | t-pose | empty")
-	cmd.Flags().String("aspect-ratio", "", "Image aspect ratio (1:1, 16:9, …)")
-	cmd.Flags().Bool("generate-multi-view", false, "Generate multi-view images (2D APIs)")
+	cmd.Flags().StringSlice("target-formats", nil, "Output formats, CSV or repeatable (glb,fbx,obj,stl,usdz,3mf,blend)")
+	cmd.Flags().String("target-format", "", "Deprecated: single format (prefer --target-formats)")
+	cmd.Flags().Bool("convert-format-only", false, "Remesh (deprecated): convert format only; prefer convert API")
+
+	// Texturing (image/text-to-3d refine, multi-image)
+	cmd.Flags().Bool("should-texture", false, "Enable texturing")
+	cmd.Flags().Bool("enable-pbr", false, "Enable PBR maps")
+	cmd.Flags().String("texture-prompt", "", "Texture text prompt (generation refine / i2 3d)")
+	cmd.Flags().String("texture-image-url", "", "Texture image URL, data URI, or local file")
+	cmd.Flags().String("texture-image-file", "", "Local texture guide image file")
+	cmd.Flags().String("texture-resolution", "", "Base color resolution: 2k | 4k | 8k")
+	cmd.Flags().String("texture-richness", "", "Deprecated texture richness hint")
 	cmd.Flags().Bool("image-enhancement", false, "Input image enhancement (meshy-6+)")
 	cmd.Flags().Bool("remove-lighting", false, "Remove baked lighting from textures")
+
+	// Retexture-specific
+	cmd.Flags().String("text-style-prompt", "", "Retexture: text style prompt")
+	cmd.Flags().String("image-style-url", "", "Retexture: style image URL, data URI, or local path")
+	cmd.Flags().String("image-style-file", "", "Retexture: local style image file")
+	cmd.Flags().Bool("enable-original-uv", false, "Retexture: keep existing UV layout")
+
+	// 2D image APIs
+	cmd.Flags().String("aspect-ratio", "", "Image aspect ratio (1:1, 16:9, …)")
+	cmd.Flags().Bool("generate-multi-view", false, "Generate multi-view images (2D APIs)")
+
+	// Sizing / previews
 	cmd.Flags().Bool("moderation", false, "Content moderation on inputs")
 	cmd.Flags().Bool("auto-size", false, "AI real-world size estimation")
-	cmd.Flags().String("origin-at", "", "bottom | center (with auto-size)")
+	cmd.Flags().String("origin-at", "", "bottom | center (with auto-size / resize)")
 	cmd.Flags().Bool("alpha-thumbnail", false, "Also render RGBA thumbnail")
 	cmd.Flags().Bool("multi-view-thumbnails", false, "Also render 4-view thumbnails")
 	cmd.Flags().Float64("resize-height", 0, "Resize height in meters")
 	cmd.Flags().Float64("resize-longest-side", 0, "Resize longest side in meters")
+
+	// Rigging / animation
 	cmd.Flags().Float64("height-meters", 0, "Character height for rigging")
 	cmd.Flags().Int("action-id", 0, "Animation action_id (see animation library)")
 	cmd.Flags().String("rig-task-id", "", "Rigging task id (animation)")
+	cmd.Flags().String("post-process-operation", "", "Animation post_process.operation_type: change_fps|fbx2usdz|extract_armature")
+	cmd.Flags().Int("post-process-fps", 0, "Animation post_process.fps (24|25|30|60)")
+
+	// Print
+	cmd.Flags().Int("max-colors", 0, "Multi-color print: palette size 1–16")
+
+	// Deprecated API fields (still accepted by Meshy for compatibility)
+	cmd.Flags().Bool("hd-texture", false, "Deprecated: use --texture-resolution 4k")
+	cmd.Flags().String("symmetry-mode", "", "Deprecated: off|auto|on (no longer affects output)")
+	cmd.Flags().Bool("is-a-t-pose", false, "Deprecated: use --pose-mode a-pose|t-pose")
+	cmd.Flags().String("art-style", "", "Deprecated (not Meshy-6): realistic|sculpture")
 }
 
 func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
@@ -222,6 +251,7 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 	setStr("ai-model", "ai_model")
 	setStr("model-type", "model_type")
 	setStr("texture-prompt", "texture_prompt")
+	setStr("text-style-prompt", "text_style_prompt")
 	setStr("texture-resolution", "texture_resolution")
 	setStr("texture-richness", "texture_richness")
 	setStr("topology", "topology")
@@ -229,6 +259,8 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 	setStr("aspect-ratio", "aspect_ratio")
 	setStr("origin-at", "origin_at")
 	setStr("rig-task-id", "rig_task_id")
+	setStr("symmetry-mode", "symmetry_mode")
+	setStr("art-style", "art_style")
 	setBool("should-texture", "should_texture")
 	setBool("enable-pbr", "enable_pbr")
 	setBool("should-remesh", "should_remesh")
@@ -240,12 +272,30 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 	setBool("auto-size", "auto_size")
 	setBool("alpha-thumbnail", "alpha_thumbnail")
 	setBool("multi-view-thumbnails", "multi_view_thumbnails")
+	setBool("enable-original-uv", "enable_original_uv")
+	setBool("convert-format-only", "convert_format_only")
+	setBool("hd-texture", "hd_texture")
+	setBool("is-a-t-pose", "is_a_t_pose")
 	setInt("target-polycount", "target_polycount")
 	setInt("decimation-mode", "decimation_mode")
 	setInt("action-id", "action_id")
+	setInt("max-colors", "max_colors")
 	setFloat("resize-height", "resize_height")
 	setFloat("resize-longest-side", "resize_longest_side")
 	setFloat("height-meters", "height_meters")
+
+	// Animation nested post_process
+	if cmd.Flags().Changed("post-process-operation") {
+		op, _ := cmd.Flags().GetString("post-process-operation")
+		if op != "" {
+			pp := map[string]any{"operation_type": op}
+			if cmd.Flags().Changed("post-process-fps") {
+				fps, _ := cmd.Flags().GetInt("post-process-fps")
+				pp["fps"] = fps
+			}
+			body["post_process"] = pp
+		}
+	}
 
 	// target_formats: multi-value preferred
 	if cmd.Flags().Changed("target-formats") {
@@ -299,6 +349,22 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 			return err
 		}
 		body["texture_image_url"] = uri
+	}
+	// retexture style image
+	if cmd.Flags().Changed("image-style-file") {
+		path, _ := cmd.Flags().GetString("image-style-file")
+		uri, err := ImageFileToDataURI(path)
+		if err != nil {
+			return err
+		}
+		body["image_style_url"] = uri
+	} else if cmd.Flags().Changed("image-style-url") {
+		v, _ := cmd.Flags().GetString("image-style-url")
+		uri, err := ResolveImageInput(v)
+		if err != nil {
+			return err
+		}
+		body["image_style_url"] = uri
 	}
 	if cmd.Flags().Changed("model-url") {
 		v, _ := cmd.Flags().GetString("model-url")

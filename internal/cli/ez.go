@@ -651,14 +651,16 @@ func (app *App) ezRetextureCmd() *cobra.Command {
 				}
 			}
 			if texturePrompt != "" {
-				body["texture_prompt"] = texturePrompt
+				// Retexture API field is text_style_prompt (not texture_prompt).
+				body["text_style_prompt"] = texturePrompt
 			}
 			return app.runEZSimple("retexture", "retexture", body, c, "retexture")
 		},
 	}
 	cmd.Flags().StringVar(&inputTaskID, "input-task-id", "", "Succeeded Meshy task to retexture")
 	cmd.Flags().StringVar(&modelURL, "model-url", "", "Model URL or local .glb")
-	cmd.Flags().StringVar(&texturePrompt, "texture-prompt", "", "Texture guidance prompt")
+	cmd.Flags().StringVar(&texturePrompt, "texture-prompt", "", "Retexture text style prompt (API: text_style_prompt)")
+	cmd.Flags().StringVar(&texturePrompt, "text-style-prompt", "", "Alias for --texture-prompt")
 	addEZCommonFlags(cmd, &c)
 	return cmd
 }

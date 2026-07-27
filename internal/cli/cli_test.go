@@ -609,3 +609,116 @@ func TestMissingAuthClearError(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestCreateFlagsCoverage(t *testing.T) {
+	var gotBodies []map[string]any
+	mux := http.NewServeMux()
+	capture := func(path string) {
+		mux.HandleFunc("POST "+path, func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+			}
+			gotBodies = append(gotBodies, body)
+			_ = json.NewEncoder(w).Encode(map[string]string{"result": "task-x"})
+		})
+	}
+	capture("/openapi/v1/retexture")
+	capture("/openapi/v1/animations")
+	capture("/openapi/v1/print/multi-color")
+	capture("/openapi/v1/image-to-3d")
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	dbPath := filepath.Join(t.TempDir(), "flags.db")
+	run := func(args ...string) {
+		var out bytes.Buffer
+		app := &cli.App{Print: &cli.Printer{JSON: true, Out: &out, Err: io.Discard}}
+		full := append([]string{"--api-key", "k", "--base-url", srv.URL, "--db", dbPath, "--json"}, args...)
+		if err := cli.ExecuteWithApp(app, full); err != nil {
+			t.Fatalf("args %v: %v", args, err)
+		}
+	}
+
+	run("retexture", "create",
+		"--input-task-id", "src-1",
+		"--text-style-prompt", "gold armor",
+		"--enable-original-uv",
+		"--enable-pbr",
+		"--texture-resolution", "4k",
+		"--target-formats", "glb,fbx",
+	)
+	run("animation", "create",
+		"--rig-task-id", "rig-1",
+		"--action-id", "92",
+		"--post-process-operation", "change_fps",
+		"--post-process-fps", "24",
+	)
+	run("print", "multi-color", "create",
+		"--input-task-id", "src-2",
+		"--max-colors", "8",
+	)
+	run("image-to-3d", "create",
+		"--image-url", "https://example.com/a.png",
+		"--should-texture",
+		"--should-remesh",
+		"--enable-pbr",
+		"--pose-mode", "a-pose",
+		"--decimation-mode", "2",
+		"--alpha-thumbnail",
+		"--multi-view-thumbnails",
+		"--auto-size",
+		"--origin-at", "center",
+		"--target-formats", "glb",
+	)
+
+	if len(gotBodies) != 4 {
+		t.Fatalf("expected 4 creates, got %d", len(gotBodies))
+	}
+
+	// retexture
+	r := gotBodies[0]
+	if r["text_style_prompt"] != "gold armor" {
+		t.Fatalf("retexture text_style_prompt: %#v", r)
+	}
+	if r["enable_original_uv"] != true {
+		t.Fatalf("enable_original_uv: %#v", r)
+	}
+	formats, _ := r["target_formats"].([]any)
+	if len(formats) != 2 {
+		t.Fatalf("target_formats: %#v", r["target_formats"])
+	}
+
+	// animation post_process
+	a := gotBodies[1]
+	pp, _ := a["post_process"].(map[string]any)
+	if pp == nil || pp["operation_type"] != "change_fps" {
+		t.Fatalf("post_process: %#v", a)
+	}
+	if int(pp["fps"].(float64)) != 24 {
+		t.Fatalf("fps: %#v", pp)
+	}
+	if int(a["action_id"].(float64)) != 92 {
+		t.Fatalf("action_id: %#v", a)
+	}
+
+	// multi-color
+	p := gotBodies[2]
+	if int(p["max_colors"].(float64)) != 8 {
+		t.Fatalf("max_colors: %#v", p)
+	}
+
+	// image-to-3d
+	i := gotBodies[3]
+	for _, key := range []string{"should_texture", "should_remesh", "enable_pbr", "alpha_thumbnail", "multi_view_thumbnails", "auto_size"} {
+		if i[key] != true {
+			t.Fatalf("%s not true in %#v", key, i)
+		}
+	}
+	if i["pose_mode"] != "a-pose" || i["origin_at"] != "center" {
+		t.Fatalf("pose/origin: %#v", i)
+	}
+	if int(i["decimation_mode"].(float64)) != 2 {
+		t.Fatalf("decimation_mode: %#v", i)
+	}
+}
