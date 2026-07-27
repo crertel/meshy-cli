@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 // HookContext is exposed to --pre/--post scripts via env and {{placeholders}}.
@@ -152,6 +153,10 @@ func (h HookContext) Interpolate(s string) string {
 
 // RunHooks executes shell commands with context env and interpolation.
 // dir is the working directory (typically the output dir).
+//
+// If a command ends with "&" (after trim), it is treated as fire-and-forget:
+// started in a new session so GUI apps (e.g. xviewer) survive after meshy exits.
+// Otherwise the hook is waited on so failures propagate (good for cp/tests).
 func RunHooks(commands []string, h HookContext, dir string, logf func(string, ...any)) error {
 	if len(commands) == 0 {
 		return nil
@@ -160,11 +165,23 @@ func RunHooks(commands []string, h HookContext, dir string, logf func(string, ..
 		dir = h.OutDir
 	}
 	baseEnv := append(os.Environ(), h.Env()...)
+	// Ensure a display for GUI post-hooks when launched from headless parents.
+	if os.Getenv("DISPLAY") == "" {
+		baseEnv = append(baseEnv, "DISPLAY=:0")
+	}
 	for i, raw := range commands {
 		if strings.TrimSpace(raw) == "" {
 			continue
 		}
 		line := h.Interpolate(raw)
+		bg := false
+		trim := strings.TrimSpace(line)
+		if strings.HasSuffix(trim, "&") {
+			bg = true
+			// keep & so sh backgrounds; wrap with nohup so SIGHUP on shell exit is ignored
+			inner := strings.TrimSpace(strings.TrimSuffix(trim, "&"))
+			line = "nohup " + inner + " >/dev/null 2>&1 &"
+		}
 		if logf != nil {
 			logf("hook[%d]: %s", i+1, line)
 		}
@@ -173,7 +190,16 @@ func RunHooks(commands []string, h HookContext, dir string, logf func(string, ..
 		cmd.Dir = dir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		cmd.Stdin = os.Stdin
+		cmd.Stdin = nil
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if bg {
+			if err := cmd.Start(); err != nil {
+				return fmt.Errorf("hook %d failed (%q): %w", i+1, line, err)
+			}
+			// Reap the shell quickly; grandchild is in its own session via nohup/setsid.
+			_ = cmd.Process.Release()
+			continue
+		}
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("hook %d failed (%q): %w", i+1, line, err)
 		}
