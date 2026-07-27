@@ -1,40 +1,89 @@
 # meshy
 
-CLI for the [Meshy.AI](https://www.meshy.ai) REST API (`https://api.meshy.ai`).
+CLI for the [Meshy](https://www.meshy.ai) REST API (`https://api.meshy.ai`).
 
 Three layers:
 
-1. **Resources** — thin 1:1 API surface (`text-to-3d`, `image-to-3d`, …)
+1. **Resources** — thin 1:1 API surface (`text-to-3d`, `image-to-3d`, `retexture`, …)
 2. **Profiles** — named default bundles (`--profile game-hero`)
 3. **`ez` workflows** — multi-step jobs with sane naming, tags, and downloads
 
-## Install / develop
+## Install
+
+Requires [Nix](https://nixos.org/download/) with flakes (`experimental-features = nix-command flakes`).
+
+### From a blank machine (GitHub flake)
 
 ```bash
-# Build / run from the flake (usual Nix tradition)
-nix build                # → ./result/bin/meshy
-nix run                  # run without installing
-nix profile install .    # install into your profile
-nix flake check
+# One-shot
+nix run github:crertel/meshy-cli -- --help
+nix run github:crertel/meshy-cli -- version
 
-# Consume from another flake
-# inputs.meshy-cli.url = "github:crertel/meshy-cli";
-# packages = [ meshy-cli.packages.${system}.meshy ];
-# or overlays = [ meshy-cli.overlays.default ]; then pkgs.meshy
+# Temporary shell with meshy on PATH
+nix shell github:crertel/meshy-cli
 
-# Dev shell (includes built `meshy` + Go tooling)
-nix develop
-go run ./cmd/meshy --help
+# Install into your user profile
+nix profile install github:crertel/meshy-cli
+meshy --help
+```
+
+Arguments after `--` go to the program:
+
+```bash
+nix run github:crertel/meshy-cli -- ez textured-3d --prompt "a mug" -o ./out/mug
+```
+
+### From a local checkout
+
+```bash
+git clone https://github.com/crertel/meshy-cli
+cd meshy-cli
+
+nix build                 # → ./result/bin/meshy
+nix run                   # run default app
+nix profile install .     # install this checkout
+nix flake check           # build package as a check
+nix develop               # dev shell (built meshy + Go tooling)
+```
+
+Layout:
+
+| File | Role |
+|------|------|
+| `package.nix` | Derivation (`buildGoModule`); usable via `callPackage` |
+| `flake.nix` | Overlay, packages, apps, checks, devShell |
+
+### Consume from another flake
+
+```nix
+{
+  inputs.meshy-cli.url = "github:crertel/meshy-cli";
+
+  # Option A: packages
+  # packages = [ meshy-cli.packages.${system}.meshy ];
+
+  # Option B: overlay → pkgs.meshy
+  # nixpkgs.overlays = [ meshy-cli.overlays.default ];
+}
+```
+
+### Without Nix
+
+```bash
+go install github.com/crertel/meshy-cli/cmd/meshy@latest
+# or from a checkout:
+go build -o meshy ./cmd/meshy
 ```
 
 ## Auth
 
-Precedence: **flag → env → SQLite**.
+Precedence: **flag → env → SQLite config**.
 
 ```bash
 export MESHY_API_KEY=msy_...
 # or
 meshy config set api_key msy_...
+meshy balance get
 ```
 
 Default DB: `~/.config/meshy/meshy.db` (`--db` / `MESHY_DB`).
@@ -42,35 +91,49 @@ Default DB: `~/.config/meshy/meshy.db` (`--db` / `MESHY_DB`).
 ## Quick path: `ez`
 
 ```bash
-# Text → preview → textured refine → download (glb by default)
+# Text → preview → textured refine → download
 meshy ez textured-3d \
   --prompt "beefcake minotaur" \
   --profile game-hero \
   --name minotaur \
   -o ./models/minotaur
 
-# Image → textured mesh
-meshy ez image-to-3d --image-url https://example.com/photo.png --profile game-lowpoly -o ./out/hero
+# Image → textured mesh (local file or URL)
+meshy ez image-to-3d --image ./photo.png --profile game-lowpoly -o ./out/hero
 
-# Hooks for scripting (repeatable --pre / --post)
-meshy ez textured-3d --prompt "mug" -o ./out/mug \
-  --pre 'mkdir -p ./out/mug/logs' \
-  --post 'echo done task=$MESHY_TASK_ID glb=$MESHY_GLB' \
-  --post 'cp {{glb}} ~/Dropbox/models/'
+# Multi-view images
+meshy ez multi-image-to-3d --images front.png,side.png,back.png -o ./out/multi
 
-meshy ez profiles   # list built-in profiles
+# Image-to-image (2D transform)
+meshy ez image-to-image --image ref.png --prompt "cyberpunk style" -o ./out/i2i
+
+# Post-process existing Meshy tasks
+meshy ez retexture --input-task-id <id> --texture-prompt "gold armor" -o ./out/rt
+meshy ez remesh --input-task-id <id> --target-polycount 30000 -o ./out/rm
+
+# Print helpers
+meshy ez print-analyze --input-task-id <id>
+meshy ez print-repair --input-task-id <id> -o ./out/print
+
+# Hooks (repeatable). Trailing & detaches GUI apps so the CLI can exit.
+meshy ez image-to-3d --image ./photo.png -o ./out/hero \
+  --post 'xviewer {{glb}} &'
+
+meshy ez profiles   # list built-in + user profiles
 ```
 
 **Output:** `-o` / `--output` sets the directory (default `./out/<name>`; created if missing).
 Files use a clean prefix (`minotaur-model.glb`); `manifest.json` records ids, profile, and paths.
 
-**Hooks:** `--pre` runs before API work; `--post` runs after success with **cwd = output dir**.
-Both use `sh -c`. Values are available as:
+**Hooks:** `--pre` runs before API work; `--post` after success with **cwd = output dir**.
+Both use `sh -c`.
 
 | Style | Examples |
 |-------|----------|
 | Env | `$MESHY_OUT_DIR`, `$MESHY_NAME`, `$MESHY_GLB`, `$MESHY_TASK_ID`, `$MESHY_MANIFEST`, `$MESHY_PREVIEW_ID`, `$MESHY_REFINE_ID`, `$MESHY_FILE_BASE_COLOR`, … |
 | Placeholders | `{{out}}`, `{{name}}`, `{{glb}}`, `{{task_id}}`, `{{manifest}}`, `{{preview_id}}`, `{{refine_id}}`, `{{base_color}}`, … |
+
+Create and resource commands also support `--pre` / `--post`.
 
 ## Profiles
 
@@ -99,29 +162,65 @@ meshy profile delete my-game
 meshy --profile my-game ez textured-3d --prompt "…"
 ```
 
-User profiles with the same name **shadow** built-ins. Deleting the user row restores the built-in. Built-ins cannot be deleted. Explicit flags always win over the profile.
+User profiles with the same name **shadow** built-ins. Deleting the user row restores the built-in.
+Built-ins cannot be deleted. Explicit flags always win over the profile.
 
-## Local image files
+## Create flags
 
-Meshy accepts public URLs or **data URIs**. Local files are auto-encoded:
+Every resource `create` accepts convenience flags mapped to Meshy JSON fields
+(plus `--body` / `--body-file` for anything else). Flags only send values when set.
+
+Common examples:
 
 ```bash
-meshy image-to-3d create --image-file ./photo.png --sync --download
-meshy image-to-3d create --image-url ./photo.png   # path also works
-meshy multi-image-to-3d create --image-files a.png,b.png --sync
-meshy ez image-to-3d --image ./photo.png -o ./out/hero
+meshy image-to-3d create \
+  --image-file ./photo.png \
+  --ai-model latest \
+  --should-texture --enable-pbr \
+  --should-remesh --target-polycount 50000 \
+  --pose-mode a-pose \
+  --target-formats glb,fbx \
+  --texture-resolution 4k \
+  --auto-size --origin-at bottom \
+  --sync --download -o ./out
+
+meshy retexture create \
+  --input-task-id <id> \
+  --text-style-prompt "gold armor" \
+  --enable-original-uv --enable-pbr \
+  --sync --download
+
+meshy animation create \
+  --rig-task-id <id> \
+  --action-id 92 \
+  --post-process-operation change_fps \
+  --post-process-fps 24 \
+  --sync
+
+meshy print multi-color create --input-task-id <id> --max-colors 8 --sync --download
 ```
+
+Deprecated Meshy fields are **not** exposed as flags; use `--body` if you need them.
+
+Local paths work for images and models where the API accepts a URL or data URI
+(`--image-url`, `--image-file`, `--image-urls`, `--model-url`, …).
 
 ## Resources & async verbs
 
 ```text
-create [--sync|--wait] [--download] [--format glb,fbx] [--textures]
-get | list | delete | wait/sync | assets | download
+create [--sync|--wait] [--download] [--stream] [--format glb,fbx] [--textures]
+get | list | delete | wait [--stream] | stream | assets | download
 ```
 
 ```bash
 meshy text-to-3d create-preview --prompt "a mug" --sync
 meshy text-to-3d create-refine --preview-task-id <id> --enable-pbr --sync --download
+
+# Wait: poll (default) or SSE stream
+meshy image-to-3d wait <id>
+meshy image-to-3d wait <id> --stream
+meshy image-to-3d stream <id>
+meshy --stream image-to-3d create --image-file ./a.png --sync   # prefer SSE globally
 
 meshy text-to-3d assets <id>
 meshy text-to-3d download <id>                    # default: glb
@@ -130,7 +229,21 @@ meshy text-to-3d download <id> --format glb --textures
 meshy text-to-3d download <id> --all -o ./out
 ```
 
-Asset discovery covers `model_urls`, `image_urls`, nested `result.*`, and **`texture_urls` PBR maps** (`base_color`, `normal`, …).
+Resource families:
+
+| Group | Commands |
+|-------|----------|
+| generation | `text-to-3d`, `image-to-3d`, `multi-image-to-3d` |
+| postprocess | `remesh`, `convert`, `resize`, `uv-unwrap`, `retexture`, `rigging`, `animation` |
+| image | `text-to-image`, `image-to-image` |
+| print | `print multi-color`, `print analyze`, `print repair` |
+| creative-lab | `creative-lab <product> prototype\|build` |
+| account | `balance` |
+
+Notes:
+
+- **Rigging / animation** have no documented list endpoint (`list` is omitted).
+- Asset discovery covers `model_urls`, `image_urls`, nested `result.*`, and **`texture_urls`** PBR maps (`base_color`, `normal`, …).
 
 ## Image models / animation library
 
@@ -143,13 +256,30 @@ meshy animation library
 
 ```bash
 meshy session open my-batch
-meshy --session my-batch --tag hero image-to-3d create --image-url … --sync
+meshy --session my-batch --tag hero image-to-3d create --image-file ./a.png --sync
 meshy tasks list --session my-batch
 meshy tasks check --session my-batch
 ```
 
-## Tests
+## Global flags
+
+| Flag | Purpose |
+|------|---------|
+| `--api-key` | Meshy API key |
+| `--base-url` | API base (default `https://api.meshy.ai`) |
+| `--db` | SQLite path |
+| `--profile` | Built-in or user profile |
+| `--session` / `--tag` | Local tracking |
+| `--stream` | Prefer SSE wait over polling |
+| `--poll-interval` / `--wait-timeout` | Wait tuning |
+| `--json` / `--quiet` | Output control |
+
+## Develop / test
 
 ```bash
+nix develop
 go test ./...
+go build -o meshy ./cmd/meshy
 ```
+
+API reference: [docs.meshy.ai](https://docs.meshy.ai).

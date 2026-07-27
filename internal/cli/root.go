@@ -71,17 +71,23 @@ Resource families:
   account      balance
 
 Shared task verbs:
-  create [--sync] [--download] | get | list | delete | wait/sync | assets | download
+  create [--sync] [--download] | get | list | delete | wait [--stream] | stream | assets | download
 
 Workflows (sane defaults):
-  ez textured-3d | ez image-to-3d | ez profiles
+  ez textured-3d | image-to-3d | multi-image-to-3d | image-to-image
+  ez retexture | remesh | print-analyze | print-repair
 
 Profiles (global --profile): game-lowpoly, game-hero, cinema, print, fast
 
 Config precedence: flag > env > profile > SQLite (~/.config/meshy/meshy.db).
 
+Install (Nix flakes):
+  nix run github:crertel/meshy-cli -- --help
+  nix profile install github:crertel/meshy-cli
+
 Examples:
   meshy ez textured-3d --prompt "beefcake minotaur" --profile game-hero --name minotaur
+  meshy ez image-to-3d --image ./photo.png -o ./out --post 'xviewer {{glb}} &'
   meshy --profile cinema text-to-3d create-preview --prompt "mug" --sync
   meshy text-to-3d download <id> --format glb,fbx --textures
   meshy balance get --json`,
