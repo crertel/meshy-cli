@@ -11,8 +11,18 @@ Three layers:
 ## Install / develop
 
 ```bash
-nix build && ./result/bin/meshy --help
-# or
+# Build / run from the flake (usual Nix tradition)
+nix build                # → ./result/bin/meshy
+nix run                  # run without installing
+nix profile install .    # install into your profile
+nix flake check
+
+# Consume from another flake
+# inputs.meshy-cli.url = "github:crertel/meshy-cli";
+# packages = [ meshy-cli.packages.${system}.meshy ];
+# or overlays = [ meshy-cli.overlays.default ]; then pkgs.meshy
+
+# Dev shell (includes built `meshy` + Go tooling)
 nix develop
 go run ./cmd/meshy --help
 ```
