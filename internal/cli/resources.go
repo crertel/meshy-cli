@@ -41,6 +41,7 @@ Use assets to list downloadable URLs; download to save them locally.`, res.Descr
 		cmd.AddCommand(app.deleteCmd(res))
 	}
 	cmd.AddCommand(app.waitCmd(res))
+	cmd.AddCommand(app.streamCmd(res))
 	cmd.AddCommand(app.assetsCmd(res))
 	cmd.AddCommand(app.downloadCmd(res))
 	// Static catalogs for resources that take model/action ids
@@ -143,22 +144,45 @@ func addSyncDownloadFlags(cmd *cobra.Command, opts *createOpts) {
 
 func addCommonCreateFlags(cmd *cobra.Command) {
 	cmd.Flags().String("prompt", "", "Text prompt")
+	cmd.Flags().String("negative-prompt", "", "Negative prompt")
 	cmd.Flags().String("image-url", "", "Image URL, data URI, or local file path")
-	cmd.Flags().String("image-file", "", "Local image file (converted to data URI; alias of path in --image-url)")
+	cmd.Flags().String("image-file", "", "Local image file (converted to data URI)")
 	cmd.Flags().StringSlice("image-urls", nil, "Multiple image URLs, data URIs, or local paths")
 	cmd.Flags().StringSlice("image-files", nil, "Local image files (converted to data URIs)")
+	cmd.Flags().StringSlice("reference-image-urls", nil, "image-to-image reference images (URL/path)")
 	cmd.Flags().String("model-url", "", "Input model URL or local path (data URI)")
 	cmd.Flags().String("input-task-id", "", "Upstream Meshy task id")
 	cmd.Flags().String("preview-task-id", "", "Preview task id (text-to-3d refine)")
-	cmd.Flags().String("ai-model", "", "AI model (latest, meshy-6, meshy-5, ...)")
+	cmd.Flags().String("ai-model", "", "AI model (latest, meshy-6, meshy-5, nano-banana, …)")
+	cmd.Flags().String("model-type", "", "Mesh type: standard | smart-topology | lowpoly")
 	cmd.Flags().Bool("should-texture", false, "Enable texturing")
 	cmd.Flags().Bool("enable-pbr", false, "Enable PBR maps")
 	cmd.Flags().String("texture-prompt", "", "Texture text prompt")
 	cmd.Flags().String("texture-image-url", "", "Texture image URL, data URI, or local file")
 	cmd.Flags().String("texture-image-file", "", "Local texture guide image file")
-	cmd.Flags().String("target-format", "", "Target format (convert)")
+	cmd.Flags().String("texture-resolution", "", "Base color resolution: 2k | 4k | 8k")
+	cmd.Flags().String("texture-richness", "", "Texture richness hint (e.g. high)")
+	cmd.Flags().StringSlice("target-formats", nil, "Output formats, CSV or repeatable (glb,fbx,obj,stl,usdz,3mf)")
+	cmd.Flags().String("target-format", "", "Deprecated: single format (prefer --target-formats)")
 	cmd.Flags().Int("target-polycount", 0, "Target polycount")
-	cmd.Flags().String("action-id", "", "Animation action id")
+	cmd.Flags().Int("decimation-mode", 0, "Adaptive decimation 1–4 (ultra…low)")
+	cmd.Flags().String("topology", "", "triangle | quad")
+	cmd.Flags().Bool("should-remesh", false, "Enable remesh phase")
+	cmd.Flags().Bool("save-pre-remeshed-model", false, "Also store pre-remesh GLB")
+	cmd.Flags().String("pose-mode", "", "a-pose | t-pose | empty")
+	cmd.Flags().String("aspect-ratio", "", "Image aspect ratio (1:1, 16:9, …)")
+	cmd.Flags().Bool("generate-multi-view", false, "Generate multi-view images (2D APIs)")
+	cmd.Flags().Bool("image-enhancement", false, "Input image enhancement (meshy-6+)")
+	cmd.Flags().Bool("remove-lighting", false, "Remove baked lighting from textures")
+	cmd.Flags().Bool("moderation", false, "Content moderation on inputs")
+	cmd.Flags().Bool("auto-size", false, "AI real-world size estimation")
+	cmd.Flags().String("origin-at", "", "bottom | center (with auto-size)")
+	cmd.Flags().Bool("alpha-thumbnail", false, "Also render RGBA thumbnail")
+	cmd.Flags().Bool("multi-view-thumbnails", false, "Also render 4-view thumbnails")
+	cmd.Flags().Float64("resize-height", 0, "Resize height in meters")
+	cmd.Flags().Float64("resize-longest-side", 0, "Resize longest side in meters")
+	cmd.Flags().Float64("height-meters", 0, "Character height for rigging")
+	cmd.Flags().Int("action-id", 0, "Animation action_id (see animation library)")
 	cmd.Flags().String("rig-task-id", "", "Rigging task id (animation)")
 }
 
@@ -180,22 +204,70 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 	setInt := func(flag, key string) {
 		if cmd.Flags().Changed(flag) {
 			v, _ := cmd.Flags().GetInt(flag)
+			body[key] = v
+		}
+	}
+	setFloat := func(flag, key string) {
+		if cmd.Flags().Changed(flag) {
+			v, _ := cmd.Flags().GetFloat64(flag)
 			if v != 0 {
 				body[key] = v
 			}
 		}
 	}
 	setStr("prompt", "prompt")
+	setStr("negative-prompt", "negative_prompt")
 	setStr("input-task-id", "input_task_id")
 	setStr("preview-task-id", "preview_task_id")
 	setStr("ai-model", "ai_model")
+	setStr("model-type", "model_type")
 	setStr("texture-prompt", "texture_prompt")
-	setStr("target-format", "target_formats")
-	setStr("action-id", "action_id")
+	setStr("texture-resolution", "texture_resolution")
+	setStr("texture-richness", "texture_richness")
+	setStr("topology", "topology")
+	setStr("pose-mode", "pose_mode")
+	setStr("aspect-ratio", "aspect_ratio")
+	setStr("origin-at", "origin_at")
 	setStr("rig-task-id", "rig_task_id")
 	setBool("should-texture", "should_texture")
 	setBool("enable-pbr", "enable_pbr")
+	setBool("should-remesh", "should_remesh")
+	setBool("save-pre-remeshed-model", "save_pre_remeshed_model")
+	setBool("generate-multi-view", "generate_multi_view")
+	setBool("image-enhancement", "image_enhancement")
+	setBool("remove-lighting", "remove_lighting")
+	setBool("moderation", "moderation")
+	setBool("auto-size", "auto_size")
+	setBool("alpha-thumbnail", "alpha_thumbnail")
+	setBool("multi-view-thumbnails", "multi_view_thumbnails")
 	setInt("target-polycount", "target_polycount")
+	setInt("decimation-mode", "decimation_mode")
+	setInt("action-id", "action_id")
+	setFloat("resize-height", "resize_height")
+	setFloat("resize-longest-side", "resize_longest_side")
+	setFloat("height-meters", "height_meters")
+
+	// target_formats: multi-value preferred
+	if cmd.Flags().Changed("target-formats") {
+		v, _ := cmd.Flags().GetStringSlice("target-formats")
+		var formats []string
+		for _, item := range v {
+			for _, p := range strings.Split(item, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					formats = append(formats, p)
+				}
+			}
+		}
+		if len(formats) > 0 {
+			body["target_formats"] = formats
+		}
+	} else if cmd.Flags().Changed("target-format") {
+		v, _ := cmd.Flags().GetString("target-format")
+		if v != "" {
+			body["target_formats"] = []string{v}
+		}
+	}
 
 	// Image inputs: URL / data URI / local file → data URI
 	if cmd.Flags().Changed("image-file") {
@@ -205,10 +277,6 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 			return err
 		}
 		body["image_url"] = uri
-		// image-to-image expects reference_image_urls
-		if _, ok := body["reference_image_urls"]; !ok {
-			body["reference_image_urls"] = []string{uri}
-		}
 	} else if cmd.Flags().Changed("image-url") {
 		v, _ := cmd.Flags().GetString("image-url")
 		uri, err := ResolveImageInput(v)
@@ -216,9 +284,6 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 			return err
 		}
 		body["image_url"] = uri
-		if _, ok := body["reference_image_urls"]; !ok {
-			body["reference_image_urls"] = []string{uri}
-		}
 	}
 	if cmd.Flags().Changed("texture-image-file") {
 		path, _ := cmd.Flags().GetString("texture-image-file")
@@ -241,7 +306,6 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") || strings.HasPrefix(v, "data:") {
 			body["model_url"] = v
 		} else if data, err := os.ReadFile(v); err == nil {
-			// local mesh/file → data URI (Meshy accepts data URIs for model_url)
 			mime := "application/octet-stream"
 			if strings.HasSuffix(strings.ToLower(v), ".glb") {
 				mime = "model/gltf-binary"
@@ -271,14 +335,30 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 			resolved = append(resolved, uri)
 		}
 		body["image_urls"] = resolved
-		// image-to-image API field
+	}
+
+	// image-to-image only: reference_image_urls (do not set from image_urls for multi-image-to-3d)
+	if cmd.Flags().Changed("reference-image-urls") {
+		v, _ := cmd.Flags().GetStringSlice("reference-image-urls")
+		resolved := make([]string, 0, len(v))
+		for _, item := range v {
+			uri, err := ResolveImageInput(item)
+			if err != nil {
+				return err
+			}
+			resolved = append(resolved, uri)
+		}
+		body["reference_image_urls"] = resolved
+	} else if img, ok := body["image_url"].(string); ok && img != "" {
+		// Single image-file/url also seeds reference_image_urls for image-to-image convenience
+		// only when not already set and not doing multi-image (no image_urls)
 		if _, has := body["reference_image_urls"]; !has {
-			body["reference_image_urls"] = resolved
+			if _, multi := body["image_urls"]; !multi {
+				body["reference_image_urls"] = []string{img}
+			}
 		}
 	}
-	if tf, ok := body["target_formats"].(string); ok && tf != "" {
-		body["target_formats"] = []string{tf}
-	}
+
 	return nil
 }
 
@@ -418,8 +498,12 @@ func (app *App) runCreate(res api.Resource, body map[string]any, opts createOpts
 }
 
 func (app *App) waitForTask(res api.Resource, id string) (api.Task, error) {
+	return app.waitForTaskMode(res, id, app.PreferStream)
+}
+
+func (app *App) waitForTaskMode(res api.Resource, id string, useStream bool) (api.Task, error) {
 	showProgress := !app.JSON && !app.Quiet
-	t, err := app.Client.Wait(app.ctx(), res.TaskPath(id), api.WaitOptions{
+	opts := api.WaitOptions{
 		Interval: app.PollEvery,
 		Timeout:  app.WaitTimeout,
 		OnUpdate: func(task api.Task) {
@@ -430,7 +514,16 @@ func (app *App) waitForTask(res api.Resource, id string) (api.Task, error) {
 				_ = app.Store.UpdateTaskStatus(id, task.Status())
 			}
 		},
-	})
+	}
+	var (
+		t   api.Task
+		err error
+	)
+	if useStream {
+		t, err = app.Client.WaitStream(app.ctx(), res.StreamPath(id), opts)
+	} else {
+		t, err = app.Client.Wait(app.ctx(), res.TaskPath(id), opts)
+	}
 	if showProgress {
 		fmt.Fprintln(os.Stderr)
 	}
@@ -508,16 +601,38 @@ func (app *App) deleteCmd(res api.Resource) *cobra.Command {
 }
 
 func (app *App) waitCmd(res api.Resource) *cobra.Command {
-	return &cobra.Command{
+	var useStream bool
+	cmd := &cobra.Command{
 		Use:     "wait <task-id>",
 		Aliases: []string{"sync"},
-		Short:   "Poll until " + res.Name + " task is terminal",
+		Short:   "Wait until " + res.Name + " task is terminal (poll or SSE)",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := RequireAPIKey(app.Client.APIKey); err != nil {
 				return err
 			}
-			t, err := app.waitForTask(res, args[0])
+			t, err := app.waitForTaskMode(res, args[0], useStream || app.PreferStream)
+			if err != nil {
+				return err
+			}
+			return app.Print.PrintAny(t)
+		},
+	}
+	cmd.Flags().BoolVar(&useStream, "stream", false, "Use SSE stream instead of polling")
+	return cmd
+}
+
+func (app *App) streamCmd(res api.Resource) *cobra.Command {
+	return &cobra.Command{
+		Use:   "stream <task-id>",
+		Short: "SSE-wait until " + res.Name + " task is terminal",
+		Long:  `Connect to GET …/:id/stream for real-time status updates (falls back to poll if stream unavailable).`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := RequireAPIKey(app.Client.APIKey); err != nil {
+				return err
+			}
+			t, err := app.waitForTaskMode(res, args[0], true)
 			if err != nil {
 				return err
 			}

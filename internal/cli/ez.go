@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/crertel/meshy-cli/internal/api"
@@ -19,23 +21,34 @@ func (app *App) ezCmd() *cobra.Command {
 		Long: `ez runs known-good multi-step Meshy pipelines.
 
 Workflows:
-  textured-3d   text → preview → refine (texture) → download
-  image-to-3d   image → textured mesh → download
+  textured-3d    text → preview → refine (texture) → download
+  image-to-3d    image → textured mesh → download
+  multi-image-to-3d  multi-view images → mesh → download
+  image-to-image transform reference image → download
+  retexture      retexture existing task/model → download
+  remesh         remesh existing task/model → download
+  print-analyze  free FDM printability analysis
+  print-repair   repair mesh for print → download
 
 Profiles (also available as global --profile):
 ` + formatProfileHelp() + `
 Examples:
   meshy ez textured-3d --prompt "beefcake minotaur" --profile game-hero --name minotaur -o ./models/mino
-  meshy ez image-to-3d --image-url https://.../photo.png -o ./out --post 'echo done: $MESHY_GLB'
-  meshy ez textured-3d --prompt "mug" --post 'cp {{glb}} ~/Dropbox/' --post 'notify-send meshy {{name}}'
+  meshy ez image-to-3d --image ./photo.png -o ./out --post 'xviewer {{glb}} &'
+  meshy ez retexture --input-task-id <id> --texture-prompt "gold armor" -o ./out
 
 Hooks (--pre / --post) run via sh -c with cwd = output dir on --post.
-Environment: MESHY_OUT_DIR, MESHY_NAME, MESHY_GLB, MESHY_TASK_ID, MESHY_MANIFEST, MESHY_FILE_*, …
-Placeholders: {{out}}, {{name}}, {{glb}}, {{task_id}}, {{manifest}}, {{preview_id}}, {{refine_id}}, …
+Trailing & detaches GUI apps. Env: MESHY_OUT_DIR, MESHY_GLB, MESHY_TASK_ID, …
 `,
 	}
 	cmd.AddCommand(app.ezTextured3DCmd())
 	cmd.AddCommand(app.ezImageTo3DCmd())
+	cmd.AddCommand(app.ezMultiImageTo3DCmd())
+	cmd.AddCommand(app.ezImageToImageCmd())
+	cmd.AddCommand(app.ezRetextureCmd())
+	cmd.AddCommand(app.ezRemeshCmd())
+	cmd.AddCommand(app.ezPrintAnalyzeCmd())
+	cmd.AddCommand(app.ezPrintRepairCmd())
 	cmd.AddCommand(app.ezProfilesCmd())
 	return cmd
 }
@@ -514,6 +527,353 @@ func (app *App) runEZImageTo3D(imageURL string, c ezCommon) error {
 		fmt.Fprintf(app.Print.Out, "  %s: %s\n", k, p)
 	}
 	return nil
+}
+
+// --- additional ez workflows ---
+
+func (app *App) ezMultiImageTo3DCmd() *cobra.Command {
+	var (
+		c     ezCommon
+		urls  []string
+		files []string
+	)
+	cmd := &cobra.Command{
+		Use:   "multi-image-to-3d",
+		Short: "Multi-view images → 3D mesh → download",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c.enablePBRSet = cmd.Flags().Changed("enable-pbr")
+			c.remeshSet = cmd.Flags().Changed("should-remesh")
+			list := append([]string{}, urls...)
+			list = append(list, files...)
+			if len(list) == 0 {
+				return fmt.Errorf("provide --image-urls and/or --image-files")
+			}
+			resolved := make([]string, 0, len(list))
+			for _, item := range list {
+				uri, err := ResolveImageInput(item)
+				if err != nil {
+					return err
+				}
+				resolved = append(resolved, uri)
+			}
+			body := map[string]any{
+				"image_urls":     resolved,
+				"should_texture": true,
+				"enable_pbr":     true,
+			}
+			return app.runEZSimple("multi-image-to-3d", "multi-image-to-3d", body, c, "multi")
+		},
+	}
+	cmd.Flags().StringSliceVar(&urls, "image-urls", nil, "Image URLs or paths")
+	cmd.Flags().StringSliceVar(&files, "image-files", nil, "Local image files")
+	addEZCommonFlags(cmd, &c)
+	return cmd
+}
+
+func (app *App) ezImageToImageCmd() *cobra.Command {
+	var (
+		c         ezCommon
+		prompt    string
+		imageURL  string
+		imageFile string
+		aiModel   string
+	)
+	cmd := &cobra.Command{
+		Use:   "image-to-image",
+		Short: "Transform a reference image via prompt → download",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if prompt == "" {
+				return fmt.Errorf("--prompt is required")
+			}
+			src := imageURL
+			if imageFile != "" {
+				src = imageFile
+			}
+			if src == "" {
+				return fmt.Errorf("--image-url or --image-file is required")
+			}
+			uri, err := ResolveImageInput(src)
+			if err != nil {
+				return err
+			}
+			if aiModel == "" {
+				aiModel = "nano-banana"
+			}
+			body := map[string]any{
+				"prompt":               prompt,
+				"ai_model":             aiModel,
+				"reference_image_urls": []string{uri},
+			}
+			if c.aiModel != "" {
+				body["ai_model"] = c.aiModel
+			}
+			return app.runEZSimple("image-to-image", "image-to-image", body, c, "i2i")
+		},
+	}
+	cmd.Flags().StringVar(&prompt, "prompt", "", "Edit / style prompt (required)")
+	cmd.Flags().StringVar(&imageURL, "image-url", "", "Reference image URL, data URI, or path")
+	cmd.Flags().StringVar(&imageFile, "image-file", "", "Local reference image")
+	cmd.Flags().StringVar(&imageFile, "image", "", "Alias for --image-file")
+	cmd.Flags().StringVar(&aiModel, "image-model", "nano-banana", "Image model (nano-banana, …)")
+	addEZCommonFlags(cmd, &c)
+	return cmd
+}
+
+func (app *App) ezRetextureCmd() *cobra.Command {
+	var (
+		c             ezCommon
+		inputTaskID   string
+		modelURL      string
+		texturePrompt string
+	)
+	cmd := &cobra.Command{
+		Use:   "retexture",
+		Short: "Retexture a model (task id or model URL) → download",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c.enablePBRSet = cmd.Flags().Changed("enable-pbr")
+			if inputTaskID == "" && modelURL == "" {
+				return fmt.Errorf("--input-task-id or --model-url is required")
+			}
+			body := map[string]any{"enable_pbr": true}
+			if inputTaskID != "" {
+				body["input_task_id"] = inputTaskID
+			}
+			if modelURL != "" {
+				v := strings.TrimSpace(modelURL)
+				if !(strings.HasPrefix(v, "http") || strings.HasPrefix(v, "data:")) {
+					data, err := os.ReadFile(v)
+					if err != nil {
+						return err
+					}
+					body["model_url"] = "data:model/gltf-binary;base64," + encodeStdB64(data)
+				} else {
+					body["model_url"] = v
+				}
+			}
+			if texturePrompt != "" {
+				body["texture_prompt"] = texturePrompt
+			}
+			return app.runEZSimple("retexture", "retexture", body, c, "retexture")
+		},
+	}
+	cmd.Flags().StringVar(&inputTaskID, "input-task-id", "", "Succeeded Meshy task to retexture")
+	cmd.Flags().StringVar(&modelURL, "model-url", "", "Model URL or local .glb")
+	cmd.Flags().StringVar(&texturePrompt, "texture-prompt", "", "Texture guidance prompt")
+	addEZCommonFlags(cmd, &c)
+	return cmd
+}
+
+func (app *App) ezRemeshCmd() *cobra.Command {
+	var (
+		c           ezCommon
+		inputTaskID string
+		modelURL    string
+	)
+	cmd := &cobra.Command{
+		Use:   "remesh",
+		Short: "Remesh a model (task id or model URL) → download",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c.remeshSet = cmd.Flags().Changed("should-remesh")
+			if inputTaskID == "" && modelURL == "" {
+				return fmt.Errorf("--input-task-id or --model-url is required")
+			}
+			body := map[string]any{}
+			if inputTaskID != "" {
+				body["input_task_id"] = inputTaskID
+			}
+			if modelURL != "" {
+				body["model_url"] = modelURL
+			}
+			return app.runEZSimple("remesh", "remesh", body, c, "remesh")
+		},
+	}
+	cmd.Flags().StringVar(&inputTaskID, "input-task-id", "", "Succeeded Meshy task to remesh")
+	cmd.Flags().StringVar(&modelURL, "model-url", "", "Model URL or local path")
+	addEZCommonFlags(cmd, &c)
+	return cmd
+}
+
+func (app *App) ezPrintAnalyzeCmd() *cobra.Command {
+	var (
+		c           ezCommon
+		inputTaskID string
+		modelURL    string
+	)
+	cmd := &cobra.Command{
+		Use:   "print-analyze",
+		Short: "Analyze FDM printability (free) and print result",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if inputTaskID == "" && modelURL == "" {
+				return fmt.Errorf("--input-task-id or --model-url is required")
+			}
+			body := map[string]any{}
+			if inputTaskID != "" {
+				body["input_task_id"] = inputTaskID
+			}
+			if modelURL != "" {
+				body["model_url"] = modelURL
+			}
+			// analyze is free; often no mesh download — still allow
+			c.noDownload = true
+			return app.runEZSimple("print-analyze", "print-analyze", body, c, "print-analyze")
+		},
+	}
+	cmd.Flags().StringVar(&inputTaskID, "input-task-id", "", "Succeeded Meshy task")
+	cmd.Flags().StringVar(&modelURL, "model-url", "", "Model URL")
+	addEZCommonFlags(cmd, &c)
+	return cmd
+}
+
+func (app *App) ezPrintRepairCmd() *cobra.Command {
+	var (
+		c           ezCommon
+		inputTaskID string
+		modelURL    string
+	)
+	cmd := &cobra.Command{
+		Use:   "print-repair",
+		Short: "Repair mesh for FDM printability → download",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if inputTaskID == "" && modelURL == "" {
+				return fmt.Errorf("--input-task-id or --model-url is required")
+			}
+			body := map[string]any{}
+			if inputTaskID != "" {
+				body["input_task_id"] = inputTaskID
+			}
+			if modelURL != "" {
+				body["model_url"] = modelURL
+			}
+			return app.runEZSimple("print-repair", "print-repair", body, c, "print-repair")
+		},
+	}
+	cmd.Flags().StringVar(&inputTaskID, "input-task-id", "", "Succeeded Meshy task")
+	cmd.Flags().StringVar(&modelURL, "model-url", "", "Model URL")
+	addEZCommonFlags(cmd, &c)
+	return cmd
+}
+
+// runEZSimple is a shared create→wait→download→manifest pipeline for single-task workflows.
+func (app *App) runEZSimple(workflow, resourceName string, body map[string]any, c ezCommon, defaultName string) error {
+	if err := RequireAPIKey(app.Client.APIKey); err != nil {
+		return err
+	}
+	prof, err := app.resolveEZProfile(c.profile)
+	if err != nil {
+		return err
+	}
+	name := c.name
+	if name == "" {
+		name = defaultName
+	}
+	name = api.Slugify(name)
+	outDir, err := ResolveOutDir(c.outDir, name)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return err
+	}
+
+	sess := c.session
+	if sess == "" {
+		if app.Session != "" {
+			sess = app.Session
+		} else {
+			sess = "ez-" + name
+		}
+	}
+	app.Session = sess
+	if _, err := app.ensureSession(sess, sess); err != nil {
+		return err
+	}
+	tags := append([]string{"ez", workflow}, c.tags...)
+	if prof != nil {
+		tags = append(tags, "profile:"+prof.Name)
+	}
+	app.Tags = append(app.Tags, tags...)
+
+	if prof != nil {
+		ApplyProfileToBody(body, *prof)
+	}
+	applyEZOverrides(body, c)
+	if c.enablePBRSet {
+		body["enable_pbr"] = c.enablePBR
+	}
+
+	hook := HookContext{Workflow: workflow, Name: name, OutDir: outDir, Profile: profileName(prof), Session: sess}
+	logHook := func(format string, args ...any) {
+		if c.verbose || !c.quiet {
+			app.ezLog(c, format, args...)
+		}
+	}
+	if err := RunHooks(c.pre, hook, outDir, logHook); err != nil {
+		return fmt.Errorf("pre hook: %w", err)
+	}
+
+	res, ok := api.ResourceByName(resourceName)
+	if !ok {
+		return fmt.Errorf("unknown resource %q", resourceName)
+	}
+	app.ezLog(c, "ez %s: create…", workflow)
+	id, err := app.Client.Create(app.ctx(), res.Path, body)
+	if err != nil {
+		return err
+	}
+	_ = app.trackTask(resourceName, id, res.TaskPath(id), "PENDING")
+	task, err := app.waitForTask(res, id)
+	if err != nil {
+		return err
+	}
+	if task.Status() != "SUCCEEDED" {
+		return fmt.Errorf("task failed: status=%s err=%s", task.Status(), task.TaskErrorMessage())
+	}
+
+	var files map[string]string
+	if !c.noDownload {
+		files, err = app.downloadTaskAssets(res, id, task, downloadOpts{
+			outDir: outDir, slug: name, formats: c.formats, textures: c.textures,
+		})
+		if err != nil {
+			// analyze may have no model assets — soft-fail if no assets
+			if !strings.Contains(err.Error(), "no downloadable assets") {
+				return err
+			}
+			app.ezLog(c, "ez %s: no downloadable assets (ok for analyze)", workflow)
+		} else {
+			files = absFileMap(files)
+		}
+	}
+
+	manPath := filepath.Join(outDir, "manifest.json")
+	manifest := map[string]any{
+		"workflow": workflow, "name": name, "profile": profileName(prof),
+		"task_id": id, "session": sess, "out_dir": outDir, "files": files,
+		"finished_at": time.Now().UTC().Format(time.RFC3339), "task": task, "body": body,
+	}
+	mb, _ := json.MarshalIndent(manifest, "", "  ")
+	_ = os.WriteFile(manPath, mb, 0o644)
+
+	hook.TaskID = id
+	hook.Manifest = manPath
+	hook.Status = task.Status()
+	hook.Files = files
+	if err := RunHooks(c.post, hook, outDir, logHook); err != nil {
+		return fmt.Errorf("post hook: %w", err)
+	}
+	app.ezLog(c, "ez %s: done → %s", workflow, outDir)
+	if app.JSON {
+		return app.Print.JSONValue(manifest)
+	}
+	fmt.Fprintf(app.Print.Out, "task: %s\nout:  %s\n", id, outDir)
+	for k, p := range files {
+		fmt.Fprintf(app.Print.Out, "  %s: %s\n", k, p)
+	}
+	return nil
+}
+
+func encodeStdB64(data []byte) string {
+	return base64.StdEncoding.EncodeToString(data)
 }
 
 func absFileMap(files map[string]string) map[string]string {

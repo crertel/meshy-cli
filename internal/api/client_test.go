@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -153,6 +154,37 @@ func TestGetBalance(t *testing.T) {
 	}
 	if bal["balance"] == nil {
 		t.Fatalf("balance = %#v", bal)
+	}
+}
+
+func TestWaitStream(t *testing.T) {
+	var n atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /openapi/v1/image-to-3d/s1/stream", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") != "text/event-stream" {
+			t.Errorf("Accept = %q", r.Header.Get("Accept"))
+		}
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"id\":\"s1\",\"status\":\"IN_PROGRESS\",\"progress\":10}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		n.Add(1)
+		fmt.Fprintf(w, "data: {\"id\":\"s1\",\"status\":\"SUCCEEDED\",\"progress\":100,\"model_urls\":{\"glb\":\"https://x/a.glb\"}}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := api.NewClient(srv.URL, "k", srv.Client())
+	task, err := c.WaitStream(context.Background(), "/openapi/v1/image-to-3d/s1/stream", api.WaitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status() != "SUCCEEDED" || task.ID() != "s1" {
+		t.Fatalf("%#v", task)
 	}
 }
 

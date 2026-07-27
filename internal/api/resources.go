@@ -83,12 +83,14 @@ var AllResources = []Resource{
 		HasList:     true, HasDelete: true,
 	},
 	{
+		// Docs only document create/get/delete/stream (no list collection).
 		Name: "rigging", Group: "postprocess",
 		Description: "Add a skeleton to a humanoid character",
 		Path:        "/openapi/v1/rigging",
 		HasList:     false, HasDelete: true,
 	},
 	{
+		// Docs only document create/get/delete/stream (no list collection).
 		Name: "animation", Group: "postprocess",
 		Description: "Apply animations to a rigged character",
 		Path:        "/openapi/v1/animations",

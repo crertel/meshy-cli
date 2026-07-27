@@ -21,6 +21,7 @@ type App struct {
 	FlagProfile string
 	JSON        bool
 	Quiet       bool
+	PreferStream bool // global --stream: prefer SSE wait over poll
 	Session     string
 	Tags        []string
 	PollEvery   time.Duration
@@ -99,6 +100,7 @@ Examples:
 	root.PersistentFlags().StringVar(&app.FlagProfile, "profile", "", "Built-in profile defaults (game-lowpoly, game-hero, cinema, print, fast)")
 	root.PersistentFlags().BoolVar(&app.JSON, "json", false, "Emit structured JSON on stdout")
 	root.PersistentFlags().BoolVar(&app.Quiet, "quiet", false, "Suppress progress logs on stderr")
+	root.PersistentFlags().BoolVar(&app.PreferStream, "stream", false, "Prefer SSE stream wait over polling (where supported)")
 	root.PersistentFlags().StringVar(&app.Session, "session", "", "Local session id/name to attach created tasks to")
 	root.PersistentFlags().StringSliceVar(&app.Tags, "tag", nil, "Tag(s) to attach to created/tracked tasks (repeatable)")
 	root.PersistentFlags().DurationVar(&app.PollEvery, "poll-interval", 5*time.Second, "Polling interval for wait")

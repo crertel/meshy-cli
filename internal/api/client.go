@@ -2,6 +2,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -300,4 +301,112 @@ func (c *Client) Wait(ctx context.Context, path string, opts WaitOptions) (Task,
 		case <-time.After(opts.Interval):
 		}
 	}
+}
+
+// WaitStream connects to the SSE stream at path (usually …/:id/stream) until terminal status.
+// Falls back to poll Wait if the stream cannot be opened.
+func (c *Client) WaitStream(ctx context.Context, streamPath string, opts WaitOptions) (Task, error) {
+	if c.APIKey == "" {
+		return nil, fmt.Errorf("missing API key: set --api-key, MESHY_API_KEY, or `meshy config set api_key <key>`")
+	}
+	u := c.BaseURL + streamPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("Accept", "text/event-stream")
+
+	// Streaming needs a client without a short overall Timeout (or with long enough).
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	// If the shared client has a short Timeout, clone without it for SSE.
+	if httpClient.Timeout > 0 && httpClient.Timeout < 30*time.Minute {
+		clone := *httpClient
+		clone.Timeout = 0
+		httpClient = &clone
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		// fall back to polling the non-stream path
+		base := strings.TrimSuffix(streamPath, "/stream")
+		return c.Wait(ctx, base, opts)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(resp.Body)
+		// Some resources may not support stream yet
+		if resp.StatusCode == 404 || resp.StatusCode == 405 {
+			base := strings.TrimSuffix(streamPath, "/stream")
+			return c.Wait(ctx, base, opts)
+		}
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(data)}
+	}
+
+	deadline := time.Time{}
+	if opts.Timeout > 0 {
+		deadline = time.Now().Add(opts.Timeout)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	// SSE payloads can be large (full task objects)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 4*1024*1024)
+
+	var last Task
+	for scanner.Scan() {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			if last != nil {
+				return last, fmt.Errorf("stream wait timed out after %s (status=%s)", opts.Timeout, last.Status())
+			}
+			return nil, fmt.Errorf("stream wait timed out after %s", opts.Timeout)
+		}
+		line := scanner.Text()
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var t Task
+		dec := json.NewDecoder(strings.NewReader(payload))
+		dec.UseNumber()
+		if err := dec.Decode(&t); err != nil {
+			continue
+		}
+		last = t
+		if opts.OnUpdate != nil {
+			opts.OnUpdate(t)
+		}
+		if t.Terminal() {
+			return t, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if last != nil && last.Terminal() {
+			return last, nil
+		}
+		// stream dropped mid-flight — poll once for final state
+		base := strings.TrimSuffix(streamPath, "/stream")
+		return c.Wait(ctx, base, opts)
+	}
+	if last != nil {
+		if last.Terminal() {
+			return last, nil
+		}
+		base := strings.TrimSuffix(streamPath, "/stream")
+		return c.Wait(ctx, base, opts)
+	}
+	base := strings.TrimSuffix(streamPath, "/stream")
+	return c.Wait(ctx, base, opts)
 }

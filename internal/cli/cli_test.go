@@ -451,7 +451,7 @@ func TestEZProfilesAndHelp(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := buf.String()
-	for _, want := range []string{"textured-3d", "image-to-3d", "profiles"} {
+	for _, want := range []string{"textured-3d", "image-to-3d", "retexture", "remesh", "image-to-image", "multi-image-to-3d", "print-analyze", "print-repair", "profiles"} {
 		if !strings.Contains(h, want) {
 			t.Errorf("ez help missing %q", want)
 		}
