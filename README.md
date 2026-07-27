@@ -36,15 +36,31 @@ Default DB: `~/.config/meshy/meshy.db` (`--db` / `MESHY_DB`).
 meshy ez textured-3d \
   --prompt "beefcake minotaur" \
   --profile game-hero \
-  --name minotaur
+  --name minotaur \
+  -o ./models/minotaur
 
 # Image → textured mesh
-meshy ez image-to-3d --image-url https://example.com/photo.png --profile game-lowpoly
+meshy ez image-to-3d --image-url https://example.com/photo.png --profile game-lowpoly -o ./out/hero
+
+# Hooks for scripting (repeatable --pre / --post)
+meshy ez textured-3d --prompt "mug" -o ./out/mug \
+  --pre 'mkdir -p ./out/mug/logs' \
+  --post 'echo done task=$MESHY_TASK_ID glb=$MESHY_GLB' \
+  --post 'cp {{glb}} ~/Dropbox/models/'
 
 meshy ez profiles   # list built-in profiles
 ```
 
-Outputs land in `./out/<name>/` with `model.glb` (or profile formats), optional textures, and `manifest.json` (task ids, seed, paths).
+**Output:** `-o` / `--output` sets the directory (default `./out/<name>`; created if missing).
+Files use a clean prefix (`minotaur-model.glb`); `manifest.json` records ids, profile, and paths.
+
+**Hooks:** `--pre` runs before API work; `--post` runs after success with **cwd = output dir**.
+Both use `sh -c`. Values are available as:
+
+| Style | Examples |
+|-------|----------|
+| Env | `$MESHY_OUT_DIR`, `$MESHY_NAME`, `$MESHY_GLB`, `$MESHY_TASK_ID`, `$MESHY_MANIFEST`, `$MESHY_PREVIEW_ID`, `$MESHY_REFINE_ID`, `$MESHY_FILE_BASE_COLOR`, … |
+| Placeholders | `{{out}}`, `{{name}}`, `{{glb}}`, `{{task_id}}`, `{{manifest}}`, `{{preview_id}}`, `{{refine_id}}`, `{{base_color}}`, … |
 
 ## Profiles
 

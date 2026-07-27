@@ -25,8 +25,13 @@ Workflows:
 Profiles (also available as global --profile):
 ` + formatProfileHelp() + `
 Examples:
-  meshy ez textured-3d --prompt "beefcake minotaur" --profile game-hero --name minotaur
-  meshy ez image-to-3d --image-url https://.../photo.png --profile game-lowpoly -o ./out
+  meshy ez textured-3d --prompt "beefcake minotaur" --profile game-hero --name minotaur -o ./models/mino
+  meshy ez image-to-3d --image-url https://.../photo.png -o ./out --post 'echo done: $MESHY_GLB'
+  meshy ez textured-3d --prompt "mug" --post 'cp {{glb}} ~/Dropbox/' --post 'notify-send meshy {{name}}'
+
+Hooks (--pre / --post) run via sh -c with cwd = output dir on --post.
+Environment: MESHY_OUT_DIR, MESHY_NAME, MESHY_GLB, MESHY_TASK_ID, MESHY_MANIFEST, MESHY_FILE_*, …
+Placeholders: {{out}}, {{name}}, {{glb}}, {{task_id}}, {{manifest}}, {{preview_id}}, {{refine_id}}, …
 `,
 	}
 	cmd.AddCommand(app.ezTextured3DCmd())
@@ -67,6 +72,8 @@ type ezCommon struct {
 	shouldRemesh  bool
 	remeshSet     bool
 	texturePrompt string
+	pre           []string // --pre hooks (repeatable)
+	post          []string // --post hooks (repeatable)
 }
 
 func (app *App) ezTextured3DCmd() *cobra.Command {
@@ -125,7 +132,7 @@ func (app *App) ezImageTo3DCmd() *cobra.Command {
 
 func addEZCommonFlags(cmd *cobra.Command, c *ezCommon) {
 	cmd.Flags().StringVar(&c.name, "name", "", "Output name / slug (default: from prompt)")
-	cmd.Flags().StringVarP(&c.outDir, "output", "o", "", "Output directory (default: ./out/<name>)")
+	cmd.Flags().StringVarP(&c.outDir, "output", "o", "", "Output directory (default: ./out/<name>; created if missing)")
 	cmd.Flags().StringVar(&c.profile, "profile", "", "Profile defaults (game-lowpoly, game-hero, cinema, print, fast)")
 	cmd.Flags().StringSliceVar(&c.formats, "format", nil, "Download format(s), comma or repeatable (default: profile or glb)")
 	cmd.Flags().BoolVar(&c.textures, "textures", false, "Also download loose PBR texture maps")
@@ -138,6 +145,8 @@ func addEZCommonFlags(cmd *cobra.Command, c *ezCommon) {
 	cmd.Flags().BoolVar(&c.enablePBR, "enable-pbr", true, "Enable PBR (refine / image-to-3d)")
 	cmd.Flags().IntVar(&c.targetPoly, "target-polycount", 0, "Target polycount")
 	cmd.Flags().BoolVar(&c.shouldRemesh, "should-remesh", true, "Enable remesh phase")
+	cmd.Flags().StringArrayVar(&c.pre, "pre", nil, "Shell command before the job (repeatable). See env/{{placeholders}}")
+	cmd.Flags().StringArrayVar(&c.post, "post", nil, "Shell command after success (repeatable). cwd=output dir")
 }
 
 func (app *App) resolveEZProfile(name string) (*Profile, error) {
@@ -177,9 +186,9 @@ func (app *App) runEZTextured3D(prompt string, c ezCommon) error {
 	} else {
 		name = api.Slugify(name)
 	}
-	outDir := c.outDir
-	if outDir == "" {
-		outDir = filepath.Join("out", name)
+	outDir, err := ResolveOutDir(c.outDir, name)
+	if err != nil {
+		return err
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
@@ -207,6 +216,22 @@ func (app *App) runEZTextured3D(prompt string, c ezCommon) error {
 	texPrompt := c.texturePrompt
 	if texPrompt == "" {
 		texPrompt = prompt
+	}
+
+	hook := HookContext{
+		Workflow: "textured-3d",
+		Name:     name,
+		OutDir:   outDir,
+		Profile:  profileName(prof),
+		Session:  sess,
+	}
+	logHook := func(format string, args ...any) {
+		if c.verbose || !c.quiet {
+			app.ezLog(c, format, args...)
+		}
+	}
+	if err := RunHooks(c.pre, hook, outDir, logHook); err != nil {
+		return fmt.Errorf("pre hook: %w", err)
 	}
 
 	// Preview body
@@ -288,11 +313,13 @@ func (app *App) runEZTextured3D(prompt string, c ezCommon) error {
 		if err != nil {
 			return err
 		}
+		files = absFileMap(files)
 		for k, p := range files {
 			app.ezLog(c, "  saved %s → %s", k, p)
 		}
 	}
 
+	manPath := filepath.Join(outDir, "manifest.json")
 	manifest := map[string]any{
 		"workflow":       "textured-3d",
 		"name":           name,
@@ -303,16 +330,27 @@ func (app *App) runEZTextured3D(prompt string, c ezCommon) error {
 		"refine_id":      refineID,
 		"session":        sess,
 		"tags":           app.Tags,
+		"out_dir":        outDir,
 		"files":          files,
 		"finished_at":    time.Now().UTC().Format(time.RFC3339),
 		"preview":        previewTask,
 		"refine":         refineTask,
 	}
 	mb, _ := json.MarshalIndent(manifest, "", "  ")
-	manPath := filepath.Join(outDir, "manifest.json")
 	if err := os.WriteFile(manPath, mb, 0o644); err != nil {
 		return err
 	}
+
+	hook.PreviewID = previewID
+	hook.RefineID = refineID
+	hook.TaskID = refineID
+	hook.Manifest = manPath
+	hook.Status = refineTask.Status()
+	hook.Files = files
+	if err := RunHooks(c.post, hook, outDir, logHook); err != nil {
+		return fmt.Errorf("post hook: %w", err)
+	}
+
 	app.ezLog(c, "ez textured-3d: done → %s", outDir)
 
 	if app.JSON {
@@ -340,9 +378,9 @@ func (app *App) runEZImageTo3D(imageURL string, c ezCommon) error {
 		name = "image-to-3d"
 	}
 	name = api.Slugify(name)
-	outDir := c.outDir
-	if outDir == "" {
-		outDir = filepath.Join("out", name)
+	outDir, err := ResolveOutDir(c.outDir, name)
+	if err != nil {
+		return err
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
@@ -366,10 +404,26 @@ func (app *App) runEZImageTo3D(imageURL string, c ezCommon) error {
 	}
 	app.Tags = append(app.Tags, tags...)
 
+	hook := HookContext{
+		Workflow: "image-to-3d",
+		Name:     name,
+		OutDir:   outDir,
+		Profile:  profileName(prof),
+		Session:  sess,
+	}
+	logHook := func(format string, args ...any) {
+		if c.verbose || !c.quiet {
+			app.ezLog(c, format, args...)
+		}
+	}
+	if err := RunHooks(c.pre, hook, outDir, logHook); err != nil {
+		return fmt.Errorf("pre hook: %w", err)
+	}
+
 	body := map[string]any{
-		"image_url":       imageURL,
-		"should_texture":  true,
-		"enable_pbr":      true,
+		"image_url":      imageURL,
+		"should_texture": true,
+		"enable_pbr":     true,
 	}
 	if prof != nil {
 		ApplyProfileToBody(body, *prof)
@@ -408,8 +462,10 @@ func (app *App) runEZImageTo3D(imageURL string, c ezCommon) error {
 		if err != nil {
 			return err
 		}
+		files = absFileMap(files)
 	}
 
+	manPath := filepath.Join(outDir, "manifest.json")
 	manifest := map[string]any{
 		"workflow":    "image-to-3d",
 		"name":        name,
@@ -417,13 +473,22 @@ func (app *App) runEZImageTo3D(imageURL string, c ezCommon) error {
 		"profile":     profileName(prof),
 		"task_id":     id,
 		"session":     sess,
+		"out_dir":     outDir,
 		"files":       files,
 		"finished_at": time.Now().UTC().Format(time.RFC3339),
 		"task":        task,
 	}
 	mb, _ := json.MarshalIndent(manifest, "", "  ")
-	manPath := filepath.Join(outDir, "manifest.json")
 	_ = os.WriteFile(manPath, mb, 0o644)
+
+	hook.TaskID = id
+	hook.Manifest = manPath
+	hook.Status = task.Status()
+	hook.Files = files
+	if err := RunHooks(c.post, hook, outDir, logHook); err != nil {
+		return fmt.Errorf("post hook: %w", err)
+	}
+
 	app.ezLog(c, "ez image-to-3d: done → %s", outDir)
 
 	if app.JSON {
@@ -434,6 +499,21 @@ func (app *App) runEZImageTo3D(imageURL string, c ezCommon) error {
 		fmt.Fprintf(app.Print.Out, "  %s: %s\n", k, p)
 	}
 	return nil
+}
+
+func absFileMap(files map[string]string) map[string]string {
+	if files == nil {
+		return nil
+	}
+	out := make(map[string]string, len(files))
+	for k, p := range files {
+		if abs, err := filepath.Abs(p); err == nil {
+			out[k] = abs
+		} else {
+			out[k] = p
+		}
+	}
+	return out
 }
 
 func applyEZOverrides(body map[string]any, c ezCommon) {
