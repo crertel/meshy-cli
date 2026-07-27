@@ -37,6 +37,11 @@ func TestHookInterpolateAndEnv(t *testing.T) {
 		!strings.Contains(got, "/tmp/out/minotaur") {
 		t.Fatalf("env expand: %q", got)
 	}
+	// Longer env names must not be mangled by shorter prefixes
+	got = h.Interpolate(`ls "$MESHY_OUT_DIR"`)
+	if got != `ls "/tmp/out/minotaur"` {
+		t.Fatalf("OUT_DIR expand: %q", got)
+	}
 	env := strings.Join(h.Env(), "\n")
 	for _, want := range []string{"MESHY_GLB=", "MESHY_OUT_DIR=", "MESHY_TASK_ID=ref-1", "MESHY_FILE_BASE_COLOR="} {
 		if !strings.Contains(env, want) {

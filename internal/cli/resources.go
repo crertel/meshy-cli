@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/crertel/meshy-cli/internal/api"
@@ -61,6 +62,8 @@ type createOpts struct {
 	formats  []string
 	textures bool
 	slug     string
+	pre      []string
+	post     []string
 }
 
 func (app *App) createPlainCmd(res api.Resource) *cobra.Command {
@@ -134,6 +137,8 @@ func addSyncDownloadFlags(cmd *cobra.Command, opts *createOpts) {
 	cmd.Flags().StringSliceVar(&opts.formats, "format", nil, "Download format(s): glb,fbx or repeat --format (default: glb / profile)")
 	cmd.Flags().BoolVar(&opts.textures, "textures", false, "Also download loose PBR texture maps")
 	cmd.Flags().StringVar(&opts.slug, "name", "", "Filename prefix for downloads (default: model)")
+	cmd.Flags().StringArrayVar(&opts.pre, "pre", nil, "Shell before create (repeatable); {{out}}/MESHY_* available after out dir exists")
+	cmd.Flags().StringArrayVar(&opts.post, "post", nil, "Shell after success (repeatable); cwd=output when downloading")
 }
 
 func addCommonCreateFlags(cmd *cobra.Command) {
@@ -200,6 +205,10 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 			return err
 		}
 		body["image_url"] = uri
+		// image-to-image expects reference_image_urls
+		if _, ok := body["reference_image_urls"]; !ok {
+			body["reference_image_urls"] = []string{uri}
+		}
 	} else if cmd.Flags().Changed("image-url") {
 		v, _ := cmd.Flags().GetString("image-url")
 		uri, err := ResolveImageInput(v)
@@ -207,6 +216,9 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 			return err
 		}
 		body["image_url"] = uri
+		if _, ok := body["reference_image_urls"]; !ok {
+			body["reference_image_urls"] = []string{uri}
+		}
 	}
 	if cmd.Flags().Changed("texture-image-file") {
 		path, _ := cmd.Flags().GetString("texture-image-file")
@@ -297,7 +309,47 @@ func (app *App) runCreate(res api.Resource, body map[string]any, opts createOpts
 	if err := RequireAPIKey(app.Client.APIKey); err != nil {
 		return err
 	}
-	sync := opts.sync || opts.download
+	sync := opts.sync || opts.download || len(opts.post) > 0
+
+	slug := opts.slug
+	if slug == "" {
+		slug = "model"
+	}
+	outDir := opts.outDir
+	if outDir == "" && (opts.download || len(opts.pre) > 0 || len(opts.post) > 0) {
+		outDir = slug
+	}
+	if outDir != "" {
+		abs, err := filepath.Abs(outDir)
+		if err != nil {
+			return err
+		}
+		outDir = abs
+		if err := os.MkdirAll(outDir, 0o755); err != nil {
+			return err
+		}
+	}
+
+	hook := HookContext{
+		Workflow: res.Name,
+		Name:     slug,
+		OutDir:   outDir,
+		Session:  app.Session,
+	}
+	if app.Profile != nil {
+		hook.Profile = app.Profile.Name
+	}
+	logHook := func(format string, args ...any) {
+		if !app.JSON && !app.Quiet {
+			fmt.Fprintf(os.Stderr, format+"\n", args...)
+		}
+	}
+	if len(opts.pre) > 0 {
+		if err := RunHooks(opts.pre, hook, outDir, logHook); err != nil {
+			return fmt.Errorf("pre hook: %w", err)
+		}
+	}
+
 	id, err := app.Client.Create(app.ctx(), res.Path, body)
 	if err != nil {
 		return err
@@ -312,20 +364,44 @@ func (app *App) runCreate(res api.Resource, body map[string]any, opts createOpts
 	if err != nil {
 		return err
 	}
-	if opts.download {
+
+	var saved map[string]string
+	if opts.download || len(opts.post) > 0 {
 		if t.Status() != "SUCCEEDED" {
 			_ = app.Print.PrintAny(t)
 			return fmt.Errorf("task %s finished with status %s; nothing to download", id, t.Status())
 		}
-		saved, err := app.downloadTaskAssets(res, id, t, downloadOpts{
-			outDir:   opts.outDir,
-			formats:  opts.formats,
-			textures: opts.textures,
-			slug:     opts.slug,
-		})
-		if err != nil {
-			return err
+		if opts.download || len(opts.post) > 0 {
+			// Always materialize assets when post hooks need paths
+			wantDL := opts.download || len(opts.post) > 0
+			if wantDL {
+				saved, err = app.downloadTaskAssets(res, id, t, downloadOpts{
+					outDir:   outDir,
+					formats:  opts.formats,
+					textures: opts.textures,
+					slug:     slug,
+				})
+				if err != nil {
+					return err
+				}
+				saved = absFileMap(saved)
+			}
 		}
+	}
+
+	hook.TaskID = id
+	hook.Status = t.Status()
+	hook.Files = saved
+	if outDir != "" {
+		hook.OutDir = outDir
+	}
+	if len(opts.post) > 0 {
+		if err := RunHooks(opts.post, hook, outDir, logHook); err != nil {
+			return fmt.Errorf("post hook: %w", err)
+		}
+	}
+
+	if opts.download {
 		if app.JSON {
 			return app.Print.JSONValue(map[string]any{
 				"task":  t,

@@ -129,15 +129,21 @@ func (h HookContext) Interpolate(s string) string {
 	for k, v := range ph {
 		s = strings.ReplaceAll(s, "{{"+k+"}}", v)
 	}
-	// $MESHY_* from env map (order: longer keys first to avoid partial replaces — simple scan)
+	// $MESHY_* from env map — replace longer keys first so $MESHY_OUT does not
+	// eat the prefix of $MESHY_OUT_DIR.
 	envMap := map[string]string{}
 	for _, e := range h.Env() {
 		if i := strings.IndexByte(e, '='); i > 0 {
 			envMap[e[:i]] = e[i+1:]
 		}
 	}
-	// ${VAR}
-	for k, v := range envMap {
+	keys := make([]string, 0, len(envMap))
+	for k := range envMap {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
+	for _, k := range keys {
+		v := envMap[k]
 		s = strings.ReplaceAll(s, "${"+k+"}", v)
 		s = strings.ReplaceAll(s, "$"+k, v)
 	}
