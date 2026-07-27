@@ -83,4 +83,60 @@ func TestSuggestedFilename(t *testing.T) {
 	if got := a.SuggestedFilename("t1"); got != "t1-image_0.png" {
 		t.Fatalf("got %q", got)
 	}
+	glb := api.Asset{Name: "glb", Ext: ".glb"}
+	if got := glb.SuggestedFilename("minotaur"); got != "minotaur-model.glb" {
+		t.Fatalf("glb name = %q", got)
+	}
+}
+
+func TestTextureURLsArray(t *testing.T) {
+	task := api.Task{
+		"status": "SUCCEEDED",
+		"model_urls": map[string]any{
+			"glb": "https://cdn.example/m.glb",
+		},
+		"texture_urls": []any{
+			map[string]any{
+				"base_color": "https://cdn.example/bc.png",
+				"normal":     "https://cdn.example/n.png",
+				"metallic":   "https://cdn.example/m.png",
+				"roughness":  "https://cdn.example/r.png",
+			},
+		},
+	}
+	assets := task.Assets()
+	names := map[string]bool{}
+	for _, a := range assets {
+		names[a.Name] = true
+	}
+	for _, want := range []string{"glb", "base_color", "normal", "metallic", "roughness"} {
+		if !names[want] {
+			t.Fatalf("missing %s in %#v", want, names)
+		}
+	}
+	// Select defaults: glb only
+	sel := api.SelectAssets(assets, nil, nil, false, false)
+	if len(sel) != 1 || sel[0].Name != "glb" {
+		t.Fatalf("default select = %#v", sel)
+	}
+	// Multi format + textures
+	sel = api.SelectAssets(assets, []string{"glb", "fbx"}, nil, false, true)
+	if len(sel) < 2 {
+		t.Fatalf("multi+tex = %#v", sel)
+	}
+	foundBC := false
+	for _, a := range sel {
+		if a.Name == "base_color" {
+			foundBC = true
+		}
+	}
+	if !foundBC {
+		t.Fatalf("expected base_color in %#v", sel)
+	}
+}
+
+func TestSlugify(t *testing.T) {
+	if got := api.Slugify("Beefcake Minotaur!!!"); got != "beefcake-minotaur" {
+		t.Fatalf("got %q", got)
+	}
 }

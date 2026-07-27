@@ -427,6 +427,173 @@ func TestImageModelsCatalog(t *testing.T) {
 	}
 }
 
+func TestEZProfilesAndHelp(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "p.db")
+	var out bytes.Buffer
+	app := &cli.App{Print: &cli.Printer{JSON: true, Out: &out, Err: io.Discard}}
+	if err := cli.ExecuteWithApp(app, []string{"--db", dbPath, "--json", "ez", "profiles"}); err != nil {
+		t.Fatal(err)
+	}
+	var profiles []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &profiles); err != nil {
+		t.Fatalf("%v %s", err, out.String())
+	}
+	if len(profiles) < 4 {
+		t.Fatalf("profiles = %s", out.String())
+	}
+
+	var buf bytes.Buffer
+	root := cli.NewRoot()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"--db", dbPath, "ez", "--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	h := buf.String()
+	for _, want := range []string{"textured-3d", "image-to-3d", "profiles"} {
+		if !strings.Contains(h, want) {
+			t.Errorf("ez help missing %q", want)
+		}
+	}
+}
+
+func TestEZTextured3DWorkflow(t *testing.T) {
+	var previewGets, refineGets atomic.Int32
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	mux.HandleFunc("POST /openapi/v2/text-to-3d", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mode, _ := body["mode"].(string)
+		if mode == "preview" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"result": "prev-1"})
+			return
+		}
+		if mode == "refine" {
+			if body["preview_task_id"] != "prev-1" {
+				t.Errorf("preview_task_id = %v", body["preview_task_id"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"result": "ref-1"})
+			return
+		}
+		http.Error(w, "bad mode", 400)
+	})
+	mux.HandleFunc("GET /openapi/v2/text-to-3d/prev-1", func(w http.ResponseWriter, r *http.Request) {
+		n := previewGets.Add(1)
+		st := "IN_PROGRESS"
+		if n >= 2 {
+			st = "SUCCEEDED"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "prev-1", "status": st, "mode": "preview"})
+	})
+	mux.HandleFunc("GET /openapi/v2/text-to-3d/ref-1", func(w http.ResponseWriter, r *http.Request) {
+		n := refineGets.Add(1)
+		st := "IN_PROGRESS"
+		if n >= 2 {
+			st = "SUCCEEDED"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "ref-1",
+			"status": st,
+			"mode":   "refine",
+			"model_urls": map[string]any{
+				"glb": srv.URL + "/m.glb",
+				"fbx": srv.URL + "/m.fbx",
+			},
+			"texture_urls": []any{
+				map[string]any{"base_color": srv.URL + "/bc.png"},
+			},
+		})
+	})
+	mux.HandleFunc("GET /m.glb", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("GLB")) })
+	mux.HandleFunc("GET /m.fbx", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("FBX")) })
+	mux.HandleFunc("GET /bc.png", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("PNG")) })
+
+	dbPath := filepath.Join(t.TempDir(), "ez.db")
+	outDir := filepath.Join(t.TempDir(), "out")
+	var out bytes.Buffer
+	app := &cli.App{Print: &cli.Printer{JSON: true, Out: &out, Err: io.Discard}}
+	if err := cli.ExecuteWithApp(app, []string{
+		"--api-key", "k", "--base-url", srv.URL, "--db", dbPath, "--json",
+		"--poll-interval", "1ms", "--quiet",
+		"ez", "textured-3d",
+		"--prompt", "beefcake minotaur",
+		"--name", "minotaur",
+		"--profile", "game-hero",
+		"-o", outDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var man map[string]any
+	if err := json.Unmarshal(out.Bytes(), &man); err != nil {
+		t.Fatalf("%v %s", err, out.String())
+	}
+	if man["preview_id"] != "prev-1" || man["refine_id"] != "ref-1" {
+		t.Fatalf("ids: %s", out.String())
+	}
+	files, _ := man["files"].(map[string]any)
+	if _, ok := files["glb"]; !ok {
+		t.Fatalf("expected glb file: %s", out.String())
+	}
+	// game-hero is glb only by default
+	if _, ok := files["fbx"]; ok {
+		t.Fatalf("game-hero should not download fbx by default: %s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "manifest.json")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDownloadMultiFormatAndTextures(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	mux.HandleFunc("GET /openapi/v1/image-to-3d/t1", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "t1",
+			"status": "SUCCEEDED",
+			"model_urls": map[string]any{
+				"glb": srv.URL + "/a.glb",
+				"fbx": srv.URL + "/a.fbx",
+			},
+			"texture_urls": []any{
+				map[string]any{"base_color": srv.URL + "/bc.png", "normal": srv.URL + "/n.png"},
+			},
+		})
+	})
+	mux.HandleFunc("GET /a.glb", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("G")) })
+	mux.HandleFunc("GET /a.fbx", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("F")) })
+	mux.HandleFunc("GET /bc.png", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("B")) })
+	mux.HandleFunc("GET /n.png", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("N")) })
+
+	dbPath := filepath.Join(t.TempDir(), "d.db")
+	outDir := filepath.Join(t.TempDir(), "dl")
+	var out bytes.Buffer
+	app := &cli.App{Print: &cli.Printer{JSON: true, Out: &out, Err: io.Discard}}
+	if err := cli.ExecuteWithApp(app, []string{
+		"--api-key", "k", "--base-url", srv.URL, "--db", dbPath, "--json",
+		"image-to-3d", "download", "t1",
+		"--format", "glb,fbx", "--textures",
+		"--name", "hero", "-o", outDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var dl map[string]any
+	if err := json.Unmarshal(out.Bytes(), &dl); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := dl["files"].(map[string]any)
+	for _, want := range []string{"glb", "fbx", "base_color", "normal"} {
+		if _, ok := files[want]; !ok {
+			t.Fatalf("missing %s in %v", want, files)
+		}
+	}
+}
+
 func TestMissingAuthClearError(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "noauth.db")
 	_ = os.Unsetenv("MESHY_API_KEY")

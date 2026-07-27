@@ -8,3 +8,6 @@ result-*
 coverage.out
 coverage.html
 /vendor/
+/out/
+# Local generation outputs
+/out/

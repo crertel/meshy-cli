@@ -18,7 +18,9 @@ type App struct {
 	FlagAPIKey  string
 	FlagBaseURL string
 	FlagDB      string
+	FlagProfile string
 	JSON        bool
+	Quiet       bool
 	Session     string
 	Tags        []string
 	PollEvery   time.Duration
@@ -30,6 +32,7 @@ type App struct {
 	Client     *api.Client
 	Cfg        Config
 	Print      *Printer
+	Profile    *Profile
 }
 
 // NewRoot builds the meshy command tree.
@@ -66,24 +69,20 @@ Resource families:
   creative-lab creative-lab <product> prototype|build ...
   account      balance
 
-Shared task verbs (where the API supports them):
+Shared task verbs:
   create [--sync] [--download] | get | list | delete | wait/sync | assets | download
 
-Async idiom: create returns a task id → --sync waits until SUCCEEDED|FAILED|CANCELED →
-assets lists downloadable URLs → download saves them. Assets are retained ~3 days.
+Workflows (sane defaults):
+  ez textured-3d | ez image-to-3d | ez profiles
 
-Config precedence: --flag > environment > SQLite store (~/.config/meshy/meshy.db).
-Local sessions and tags track batches of jobs you create without re-scraping remote IDs.
+Profiles (global --profile): game-lowpoly, game-hero, cinema, print, fast
+
+Config precedence: flag > env > profile > SQLite (~/.config/meshy/meshy.db).
 
 Examples:
-  meshy config set api_key msy_...
-  meshy session open my-batch
-  meshy text-to-3d create-preview --prompt "a coffee mug" --sync --download
-  meshy text-to-image models
-  meshy text-to-image create --ai-model nano-banana --prompt "dragon" --sync
-  meshy text-to-image assets <id>
-  meshy text-to-image download <id> --all -o ./out
-  meshy tasks list --session my-batch
+  meshy ez textured-3d --prompt "beefcake minotaur" --profile game-hero --name minotaur
+  meshy --profile cinema text-to-3d create-preview --prompt "mug" --sync
+  meshy text-to-3d download <id> --format glb,fbx --textures
   meshy balance get --json`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -97,7 +96,9 @@ Examples:
 	root.PersistentFlags().StringVar(&app.FlagAPIKey, "api-key", "", "Meshy API key (or MESHY_API_KEY / config)")
 	root.PersistentFlags().StringVar(&app.FlagBaseURL, "base-url", "", "API base URL (or MESHY_BASE_URL / config)")
 	root.PersistentFlags().StringVar(&app.FlagDB, "db", "", "SQLite DB path (or MESHY_DB)")
+	root.PersistentFlags().StringVar(&app.FlagProfile, "profile", "", "Built-in profile defaults (game-lowpoly, game-hero, cinema, print, fast)")
 	root.PersistentFlags().BoolVar(&app.JSON, "json", false, "Emit structured JSON on stdout")
+	root.PersistentFlags().BoolVar(&app.Quiet, "quiet", false, "Suppress progress logs on stderr")
 	root.PersistentFlags().StringVar(&app.Session, "session", "", "Local session id/name to attach created tasks to")
 	root.PersistentFlags().StringSliceVar(&app.Tags, "tag", nil, "Tag(s) to attach to created/tracked tasks (repeatable)")
 	root.PersistentFlags().DurationVar(&app.PollEvery, "poll-interval", 5*time.Second, "Polling interval for wait")
@@ -111,6 +112,7 @@ Examples:
 	}
 	root.AddCommand(app.printGroupCmd())
 	root.AddCommand(app.creativeLabCmd())
+	root.AddCommand(app.ezCmd())
 	root.AddCommand(app.balanceCmd())
 	root.AddCommand(app.configCmd())
 	root.AddCommand(app.sessionCmd())
@@ -154,6 +156,14 @@ func (app *App) setup() error {
 	cfg.Tags = app.Tags
 	cfg.Store = app.Store
 	app.Cfg = cfg
+
+	if app.FlagProfile != "" {
+		p, ok := ProfileByName(app.FlagProfile)
+		if !ok {
+			return fmt.Errorf("unknown profile %q (try: meshy ez profiles)", app.FlagProfile)
+		}
+		app.Profile = &p
+	}
 
 	if app.Client == nil {
 		app.Client = api.NewClient(cfg.BaseURL, cfg.APIKey, app.HTTPClient)

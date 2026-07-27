@@ -2,118 +2,102 @@
 
 CLI for the [Meshy.AI](https://www.meshy.ai) REST API (`https://api.meshy.ai`).
 
-Suitable for humans, scripts, and agents: resource-oriented subcommands, human or `--json` output, local SQLite settings, and local work sessions/tags for batch job bookkeeping.
+Three layers:
+
+1. **Resources** — thin 1:1 API surface (`text-to-3d`, `image-to-3d`, …)
+2. **Profiles** — named default bundles (`--profile game-hero`)
+3. **`ez` workflows** — multi-step jobs with sane naming, tags, and downloads
 
 ## Install / develop
 
 ```bash
-# Nix
-nix build
-./result/bin/meshy --help
-
-# or enter the dev shell
+nix build && ./result/bin/meshy --help
+# or
 nix develop
 go run ./cmd/meshy --help
 ```
 
 ## Auth
 
-Config precedence: **flag → environment → SQLite**.
+Precedence: **flag → env → SQLite**.
 
 ```bash
 export MESHY_API_KEY=msy_...
 # or
 meshy config set api_key msy_...
-# or
-meshy --api-key msy_... balance get
 ```
 
-Default SQLite path: `~/.config/meshy/meshy.db` (override with `--db` / `MESHY_DB`).
+Default DB: `~/.config/meshy/meshy.db` (`--db` / `MESHY_DB`).
 
-## Resource families
+## Quick path: `ez`
 
-| Family | Commands |
-|--------|----------|
-| Generation | `text-to-3d`, `image-to-3d`, `multi-image-to-3d` |
-| Post-process | `remesh`, `convert`, `resize`, `uv-unwrap`, `retexture`, `rigging`, `animation` |
-| 2D | `text-to-image`, `image-to-image` |
-| Print | `print multi-color`, `print analyze`, `print repair` |
-| Creative Lab | `creative-lab <product> prototype|build` |
-| Account | `balance` |
+```bash
+# Text → preview → textured refine → download (glb by default)
+meshy ez textured-3d \
+  --prompt "beefcake minotaur" \
+  --profile game-hero \
+  --name minotaur
 
-Shared async task verbs (where the API supports them):
+# Image → textured mesh
+meshy ez image-to-3d --image-url https://example.com/photo.png --profile game-lowpoly
+
+meshy ez profiles   # list built-in profiles
+```
+
+Outputs land in `./out/<name>/` with `model.glb` (or profile formats), optional textures, and `manifest.json` (task ids, seed, paths).
+
+## Profiles
+
+Global flag (applies to create / download / ez):
+
+| Profile | Intent |
+|---------|--------|
+| `game-lowpoly` | Remesh, ~30k polys, glb |
+| `game-hero` | Medium poly, PBR, glb |
+| `cinema` | Higher poly, glb+fbx + loose PBR maps |
+| `print` | stl+glb bias |
+| `fast` | Minimal defaults, glb |
+
+```bash
+meshy --profile cinema text-to-3d create-preview --prompt "…" --sync
+```
+
+Explicit flags always win over the profile.
+
+## Resources & async verbs
 
 ```text
-create [--sync|--wait] [--download] | get | list | delete | wait/sync | assets | download
+create [--sync|--wait] [--download] [--format glb,fbx] [--textures]
+get | list | delete | wait/sync | assets | download
 ```
 
-Meshy tasks are asynchronous: **create** returns an id → **`--sync`** (alias `--wait`) polls until `SUCCEEDED` / `FAILED` / `CANCELED` → **assets** lists downloadable URLs → **download** saves them.
-
-One-shot create + wait + download:
-
 ```bash
-meshy image-to-3d create --image-url https://... --sync --download -o ./out
+meshy text-to-3d create-preview --prompt "a mug" --sync
+meshy text-to-3d create-refine --preview-task-id <id> --enable-pbr --sync --download
+
+meshy text-to-3d assets <id>
+meshy text-to-3d download <id>                    # default: glb
+meshy text-to-3d download <id> --format glb,fbx
+meshy text-to-3d download <id> --format glb --textures
+meshy text-to-3d download <id> --all -o ./out
 ```
 
-Text-to-3D uses the two-step API:
+Asset discovery covers `model_urls`, `image_urls`, nested `result.*`, and **`texture_urls` PBR maps** (`base_color`, `normal`, …).
+
+## Image models / animation library
 
 ```bash
-meshy text-to-3d create-preview --prompt "a coffee mug" --sync
-meshy text-to-3d create-refine --preview-task-id <id> --sync --download
-```
-
-### Discover models and assets
-
-```bash
-# Known ai_model values for image endpoints (from docs)
 meshy text-to-image models
-meshy image-to-image models
-
-# Public animation action_id catalog
 meshy animation library
-
-# What's downloadable on a finished task?
-meshy text-to-image assets <task-id>
-meshy image-to-3d assets <task-id>
-meshy text-to-image download <task-id> --all -o ./out
-meshy image-to-3d download <task-id> --name glb
 ```
 
-## Sessions and tags
-
-Local only (not Meshy cloud sessions). Track batches of jobs you create:
+## Sessions & tags
 
 ```bash
 meshy session open my-batch
-meshy --session my-batch --tag hero image-to-3d create --image-url https://...
+meshy --session my-batch --tag hero image-to-3d create --image-url … --sync
 meshy tasks list --session my-batch
-meshy tasks check --session my-batch   # refresh remote status
-meshy session show my-batch
-```
-
-## JSON output
-
-```bash
-meshy --json balance get
-meshy --json image-to-3d get <task-id>
-```
-
-## Examples
-
-```bash
-# Image to 3D (sync run)
-meshy image-to-3d create --image-url https://example.com/photo.png --should-texture --sync --download -o ./out
-
-# Text to image
-meshy text-to-image create --ai-model nano-banana --prompt "a dragon at sunset" --sync
-meshy text-to-image assets <task-id>
-meshy text-to-image download <task-id> --kind image -o ./imgs
-
-# Raw JSON body when flags are not enough
-meshy remesh create --body '{"input_task_id":"...","target_formats":["glb"]}' --sync
-
-# Credits
-meshy balance get
+meshy tasks check --session my-batch
 ```
 
 ## Tests
@@ -121,5 +105,3 @@ meshy balance get
 ```bash
 go test ./...
 ```
-
-Tests drive the real HTTP client and CLI against a mock Meshy server (create → poll → terminal) and exercise SQLite settings/session/tag storage.

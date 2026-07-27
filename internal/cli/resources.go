@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/crertel/meshy-cli/internal/api"
@@ -58,6 +57,9 @@ type createOpts struct {
 	sync     bool
 	download bool
 	outDir   string
+	formats  []string
+	textures bool
+	slug     string
 }
 
 func (app *App) createPlainCmd(res api.Resource) *cobra.Command {
@@ -68,7 +70,7 @@ func (app *App) createPlainCmd(res api.Resource) *cobra.Command {
 		Long: `Create a task. Pass JSON via --body/--body-file and/or convenience flags.
 
 --sync / --wait: do not exit until the task reaches a terminal status.
---download: after a successful sync wait, download all assets (implies --sync).`,
+--download: after success, download assets (implies --sync; default glb / profile formats).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			body, err := parseBody(opts.bodyFile, opts.bodyJSON)
 			if err != nil {
@@ -79,6 +81,9 @@ func (app *App) createPlainCmd(res api.Resource) *cobra.Command {
 			}
 			if err := mergeCreateFlags(cmd, body); err != nil {
 				return err
+			}
+			if app.Profile != nil {
+				ApplyProfileToBody(body, *app.Profile)
 			}
 			return app.runCreate(res, body, opts)
 		},
@@ -107,6 +112,9 @@ func (app *App) createModeCmd(res api.Resource, mode string) *cobra.Command {
 			if err := mergeCreateFlags(cmd, body); err != nil {
 				return err
 			}
+			if app.Profile != nil {
+				ApplyProfileToBody(body, *app.Profile)
+			}
 			return app.runCreate(res, body, opts)
 		},
 	}
@@ -122,6 +130,9 @@ func addSyncDownloadFlags(cmd *cobra.Command, opts *createOpts) {
 	cmd.Flags().BoolVar(&opts.sync, "wait", false, "Alias for --sync")
 	cmd.Flags().BoolVar(&opts.download, "download", false, "After success, download assets (implies --sync)")
 	cmd.Flags().StringVarP(&opts.outDir, "output", "o", "", "Directory for --download (default: <task-id>)")
+	cmd.Flags().StringSliceVar(&opts.formats, "format", nil, "Download format(s): glb,fbx or repeat --format (default: glb / profile)")
+	cmd.Flags().BoolVar(&opts.textures, "textures", false, "Also download loose PBR texture maps")
+	cmd.Flags().StringVar(&opts.slug, "name", "", "Filename prefix for downloads (default: model)")
 }
 
 func addCommonCreateFlags(cmd *cobra.Command) {
@@ -239,8 +250,10 @@ func (app *App) runCreate(res api.Resource, body map[string]any, opts createOpts
 			return fmt.Errorf("task %s finished with status %s; nothing to download", id, t.Status())
 		}
 		saved, err := app.downloadTaskAssets(res, id, t, downloadOpts{
-			outDir: opts.outDir,
-			all:    true,
+			outDir:   opts.outDir,
+			formats:  opts.formats,
+			textures: opts.textures,
+			slug:     opts.slug,
 		})
 		if err != nil {
 			return err
@@ -261,11 +274,12 @@ func (app *App) runCreate(res api.Resource, body map[string]any, opts createOpts
 }
 
 func (app *App) waitForTask(res api.Resource, id string) (api.Task, error) {
+	showProgress := !app.JSON && !app.Quiet
 	t, err := app.Client.Wait(app.ctx(), res.TaskPath(id), api.WaitOptions{
 		Interval: app.PollEvery,
 		Timeout:  app.WaitTimeout,
 		OnUpdate: func(task api.Task) {
-			if !app.JSON {
+			if showProgress {
 				fmt.Fprintf(os.Stderr, "\rstatus=%s progress=%v   ", task.Status(), task.Progress())
 			}
 			if app.Store != nil {
@@ -273,7 +287,7 @@ func (app *App) waitForTask(res api.Resource, id string) (api.Task, error) {
 			}
 		},
 	})
-	if !app.JSON {
+	if showProgress {
 		fmt.Fprintln(os.Stderr)
 	}
 	if err != nil {
@@ -423,31 +437,23 @@ Use the name column with:  meshy ` + res.Name + ` download <id> --name <name>`,
 	return cmd
 }
 
-type downloadOpts struct {
-	outDir string
-	name   string
-	format string // alias of name
-	kind   string
-	all    bool
-	wait   bool
-}
-
 func (app *App) downloadCmd(res api.Resource) *cobra.Command {
 	var opts downloadOpts
+	var kind string
 	cmd := &cobra.Command{
 		Use:   "download <task-id>",
 		Short: "Download assets from a " + res.Name + " task",
 		Long: `Download task assets to disk.
 
-Discovers URLs from model_urls, image_urls, nested result fields, thumbnails, etc.
-Use assets first to see names:
+Discovers model_urls, image_urls, texture_urls (PBR maps), nested result fields, etc.
 
   meshy ` + res.Name + ` assets <task-id>
-  meshy ` + res.Name + ` download <task-id> --all
-  meshy ` + res.Name + ` download <task-id> --name glb
-  meshy ` + res.Name + ` download <task-id> --kind image -o ./out
+  meshy ` + res.Name + ` download <task-id>                  # default: glb (or images)
+  meshy ` + res.Name + ` download <task-id> --format glb,fbx
+  meshy ` + res.Name + ` download <task-id> --format glb --textures
+  meshy ` + res.Name + ` download <task-id> --all -o ./out
 
-Default without filters: downloads glb if present, otherwise all assets.`,
+Default: glb if present; else generated images; profile may add formats.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := RequireAPIKey(app.Client.APIKey); err != nil {
@@ -464,9 +470,8 @@ Default without filters: downloads glb if present, otherwise all assets.`,
 			if err != nil {
 				return err
 			}
-			// format is alias for name
-			if opts.name == "" {
-				opts.name = opts.format
+			if kind != "" {
+				opts.kinds = []string{kind}
 			}
 			saved, err := app.downloadTaskAssets(res, id, t, opts)
 			if err != nil {
@@ -482,63 +487,14 @@ Default without filters: downloads glb if present, otherwise all assets.`,
 		},
 	}
 	cmd.Flags().StringVarP(&opts.outDir, "output", "o", "", "Output directory (default: task id)")
-	cmd.Flags().StringVar(&opts.name, "name", "", "Asset name to download (see assets command)")
-	cmd.Flags().StringVar(&opts.format, "format", "", "Alias for --name (e.g. glb, fbx, image_0)")
-	cmd.Flags().StringVar(&opts.kind, "kind", "", "Download all assets of kind (model, image, ...)")
+	cmd.Flags().StringVar(&opts.slug, "name", "", "Filename prefix (default: model)")
+	cmd.Flags().StringSliceVar(&opts.formats, "format", nil, "Format(s) to download: glb,fbx,base_color (repeatable or CSV)")
+	cmd.Flags().StringVar(&kind, "kind", "", "Download all assets of kind (model, image, texture, ...)")
 	cmd.Flags().BoolVar(&opts.all, "all", false, "Download every available asset")
+	cmd.Flags().BoolVar(&opts.textures, "textures", false, "Also download loose PBR texture maps")
 	cmd.Flags().BoolVar(&opts.wait, "sync", false, "Wait for terminal status before downloading")
 	cmd.Flags().BoolVar(&opts.wait, "wait", false, "Alias for --sync")
 	return cmd
-}
-
-func (app *App) downloadTaskAssets(res api.Resource, id string, t api.Task, opts downloadOpts) (map[string]string, error) {
-	assets := t.Assets()
-	if len(assets) == 0 {
-		return nil, fmt.Errorf("no downloadable assets on task %s (status=%s); try: meshy %s assets %s", id, t.Status(), res.Name, id)
-	}
-
-	var selected []api.Asset
-	switch {
-	case opts.all || opts.kind != "" || opts.name != "":
-		selected = api.FilterAssets(assets, opts.name, opts.kind)
-	default:
-		// Prefer glb when present; else download everything (images, etc.)
-		glb := api.FilterAssets(assets, "glb", "")
-		if len(glb) > 0 {
-			selected = glb
-		} else {
-			selected = assets
-		}
-	}
-	if len(selected) == 0 {
-		names := make([]string, 0, len(assets))
-		for _, a := range assets {
-			names = append(names, a.Name)
-		}
-		return nil, fmt.Errorf("no assets matched filters (available: %s)", strings.Join(names, ", "))
-	}
-
-	outDir := opts.outDir
-	if outDir == "" {
-		outDir = id
-	}
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return nil, err
-	}
-
-	saved := map[string]string{}
-	for _, a := range selected {
-		data, err := app.Client.Download(app.ctx(), a.URL)
-		if err != nil {
-			return saved, fmt.Errorf("download %s: %w", a.Name, err)
-		}
-		path := filepath.Join(outDir, a.SuggestedFilename(id))
-		if err := os.WriteFile(path, data, 0o644); err != nil {
-			return saved, err
-		}
-		saved[a.Name] = path
-	}
-	return saved, nil
 }
 
 func (app *App) imageModelsCmd(res api.Resource) *cobra.Command {
