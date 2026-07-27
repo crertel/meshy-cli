@@ -1,0 +1,9 @@
+.direnv/
+result
+result-*
+
+# Go
+/bin/
+*.test
+coverage.out
+coverage.html
