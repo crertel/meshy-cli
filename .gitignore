@@ -7,3 +7,4 @@ result-*
 *.test
 coverage.out
 coverage.html
+/vendor/

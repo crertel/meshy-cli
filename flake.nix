@@ -32,7 +32,7 @@
           pname = "meshy";
           version = "0.1.0";
           src = pkgs.lib.cleanSource ./.;
-          vendorHash = null;
+          vendorHash = "sha256-tFFy7I2Tj0kXqh+gs694Bc02K2JCzQhigeYEhUi+K5E=";
           subPackages = [ "cmd/meshy" ];
         };
 
