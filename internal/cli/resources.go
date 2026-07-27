@@ -145,7 +145,6 @@ func addSyncDownloadFlags(cmd *cobra.Command, opts *createOpts) {
 func addCommonCreateFlags(cmd *cobra.Command) {
 	// Inputs / prompts
 	cmd.Flags().String("prompt", "", "Text prompt")
-	cmd.Flags().String("negative-prompt", "", "Negative prompt (deprecated on most models)")
 	cmd.Flags().String("image-url", "", "Image URL, data URI, or local file path")
 	cmd.Flags().String("image-file", "", "Local image file (converted to data URI)")
 	cmd.Flags().StringSlice("image-urls", nil, "Multiple image URLs, data URIs, or local paths")
@@ -165,8 +164,6 @@ func addCommonCreateFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("save-pre-remeshed-model", false, "Also store pre-remesh GLB")
 	cmd.Flags().String("pose-mode", "", "a-pose | t-pose | empty")
 	cmd.Flags().StringSlice("target-formats", nil, "Output formats, CSV or repeatable (glb,fbx,obj,stl,usdz,3mf,blend)")
-	cmd.Flags().String("target-format", "", "Deprecated: single format (prefer --target-formats)")
-	cmd.Flags().Bool("convert-format-only", false, "Remesh (deprecated): convert format only; prefer convert API")
 
 	// Texturing (image/text-to-3d refine, multi-image)
 	cmd.Flags().Bool("should-texture", false, "Enable texturing")
@@ -175,7 +172,6 @@ func addCommonCreateFlags(cmd *cobra.Command) {
 	cmd.Flags().String("texture-image-url", "", "Texture image URL, data URI, or local file")
 	cmd.Flags().String("texture-image-file", "", "Local texture guide image file")
 	cmd.Flags().String("texture-resolution", "", "Base color resolution: 2k | 4k | 8k")
-	cmd.Flags().String("texture-richness", "", "Deprecated texture richness hint")
 	cmd.Flags().Bool("image-enhancement", false, "Input image enhancement (meshy-6+)")
 	cmd.Flags().Bool("remove-lighting", false, "Remove baked lighting from textures")
 
@@ -207,12 +203,6 @@ func addCommonCreateFlags(cmd *cobra.Command) {
 
 	// Print
 	cmd.Flags().Int("max-colors", 0, "Multi-color print: palette size 1–16")
-
-	// Deprecated API fields (still accepted by Meshy for compatibility)
-	cmd.Flags().Bool("hd-texture", false, "Deprecated: use --texture-resolution 4k")
-	cmd.Flags().String("symmetry-mode", "", "Deprecated: off|auto|on (no longer affects output)")
-	cmd.Flags().Bool("is-a-t-pose", false, "Deprecated: use --pose-mode a-pose|t-pose")
-	cmd.Flags().String("art-style", "", "Deprecated (not Meshy-6): realistic|sculpture")
 }
 
 func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
@@ -245,7 +235,6 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 		}
 	}
 	setStr("prompt", "prompt")
-	setStr("negative-prompt", "negative_prompt")
 	setStr("input-task-id", "input_task_id")
 	setStr("preview-task-id", "preview_task_id")
 	setStr("ai-model", "ai_model")
@@ -253,14 +242,11 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 	setStr("texture-prompt", "texture_prompt")
 	setStr("text-style-prompt", "text_style_prompt")
 	setStr("texture-resolution", "texture_resolution")
-	setStr("texture-richness", "texture_richness")
 	setStr("topology", "topology")
 	setStr("pose-mode", "pose_mode")
 	setStr("aspect-ratio", "aspect_ratio")
 	setStr("origin-at", "origin_at")
 	setStr("rig-task-id", "rig_task_id")
-	setStr("symmetry-mode", "symmetry_mode")
-	setStr("art-style", "art_style")
 	setBool("should-texture", "should_texture")
 	setBool("enable-pbr", "enable_pbr")
 	setBool("should-remesh", "should_remesh")
@@ -273,9 +259,6 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 	setBool("alpha-thumbnail", "alpha_thumbnail")
 	setBool("multi-view-thumbnails", "multi_view_thumbnails")
 	setBool("enable-original-uv", "enable_original_uv")
-	setBool("convert-format-only", "convert_format_only")
-	setBool("hd-texture", "hd_texture")
-	setBool("is-a-t-pose", "is_a_t_pose")
 	setInt("target-polycount", "target_polycount")
 	setInt("decimation-mode", "decimation_mode")
 	setInt("action-id", "action_id")
@@ -297,7 +280,7 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 		}
 	}
 
-	// target_formats: multi-value preferred
+	// target_formats
 	if cmd.Flags().Changed("target-formats") {
 		v, _ := cmd.Flags().GetStringSlice("target-formats")
 		var formats []string
@@ -311,11 +294,6 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 		}
 		if len(formats) > 0 {
 			body["target_formats"] = formats
-		}
-	} else if cmd.Flags().Changed("target-format") {
-		v, _ := cmd.Flags().GetString("target-format")
-		if v != "" {
-			body["target_formats"] = []string{v}
 		}
 	}
 

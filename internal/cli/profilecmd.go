@@ -202,7 +202,6 @@ type profileFlagSet struct {
 	description      string
 	aiModel          string
 	targetPoly       int
-	textureRichness  string
 	downloadFormats  string
 	shouldRemesh     bool
 	shouldTexture    bool
@@ -215,7 +214,6 @@ func addProfileFieldFlags(cmd *cobra.Command, f *profileFlagSet) {
 	cmd.Flags().StringVar(&f.description, "description", "", "Profile description")
 	cmd.Flags().StringVar(&f.aiModel, "ai-model", "", "Default ai_model")
 	cmd.Flags().IntVar(&f.targetPoly, "target-polycount", 0, "Default target_polycount")
-	cmd.Flags().StringVar(&f.textureRichness, "texture-richness", "", "texture_richness hint")
 	cmd.Flags().StringVar(&f.downloadFormats, "download-formats", "", "Comma-separated formats (glb,fbx,…)")
 	cmd.Flags().BoolVar(&f.shouldRemesh, "should-remesh", false, "Default should_remesh (set with flag to enable)")
 	cmd.Flags().BoolVar(&f.shouldTexture, "should-texture", false, "Default should_texture")
@@ -233,9 +231,6 @@ func applyProfileFlagSet(p *Profile, f profileFlagSet, cmd *cobra.Command) {
 	}
 	if cmd.Flags().Changed("target-polycount") {
 		p.TargetPolycount = f.targetPoly
-	}
-	if cmd.Flags().Changed("texture-richness") {
-		p.TextureRichness = f.textureRichness
 	}
 	if cmd.Flags().Changed("download-formats") {
 		p.DownloadFormats = splitCSV(f.downloadFormats)

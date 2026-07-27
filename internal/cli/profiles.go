@@ -20,9 +20,8 @@ type Profile struct {
 	AIModel         string `json:"ai_model,omitempty"`
 	ShouldRemesh    *bool  `json:"should_remesh,omitempty"`
 	TargetPolycount int    `json:"target_polycount,omitempty"`
-	ShouldTexture   *bool  `json:"should_texture,omitempty"`
-	EnablePBR       *bool  `json:"enable_pbr,omitempty"`
-	TextureRichness string `json:"texture_richness,omitempty"`
+	ShouldTexture *bool `json:"should_texture,omitempty"`
+	EnablePBR     *bool `json:"enable_pbr,omitempty"`
 
 	// Download defaults
 	DownloadFormats  []string `json:"download_formats,omitempty"`
@@ -48,7 +47,7 @@ var BuiltinProfiles = []Profile{
 		Name: "cinema", Description: "Higher fidelity: more poly, PBR, glb+fbx+texture maps",
 		Builtin: true, Source: "builtin",
 		AIModel: "latest", ShouldRemesh: boolPtr(true), TargetPolycount: 100000,
-		EnablePBR: boolPtr(true), TextureRichness: "high",
+		EnablePBR: boolPtr(true),
 		DownloadFormats: []string{"glb", "fbx"}, DownloadTextures: true,
 	},
 	{
@@ -207,9 +206,6 @@ func MergeProfile(base, patch Profile) Profile {
 	if patch.EnablePBR != nil {
 		out.EnablePBR = patch.EnablePBR
 	}
-	if patch.TextureRichness != "" {
-		out.TextureRichness = patch.TextureRichness
-	}
 	if len(patch.DownloadFormats) > 0 {
 		out.DownloadFormats = patch.DownloadFormats
 	}
@@ -256,7 +252,6 @@ func ApplyProfileToBody(body map[string]any, p Profile) {
 	if p.EnablePBR != nil {
 		setIfMissing("enable_pbr", *p.EnablePBR)
 	}
-	setIfMissing("texture_richness", p.TextureRichness)
 }
 
 func normalizeProfileName(name string) string {
