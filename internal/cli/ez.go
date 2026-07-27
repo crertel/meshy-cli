@@ -43,13 +43,9 @@ Placeholders: {{out}}, {{name}}, {{glb}}, {{task_id}}, {{manifest}}, {{preview_i
 func (app *App) ezProfilesCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "profiles",
-		Short: "List built-in profiles",
+		Short: "List profiles (alias for: meshy profile list)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if app.JSON {
-				return app.Print.JSONValue(BuiltinProfiles)
-			}
-			fmt.Fprint(app.Print.Out, formatProfileHelp())
-			return nil
+			return app.profileListCmd().RunE(cmd, args)
 		},
 	}
 }
@@ -109,23 +105,39 @@ Writes a manifest.json next to outputs.`,
 
 func (app *App) ezImageTo3DCmd() *cobra.Command {
 	var (
-		c        ezCommon
-		imageURL string
+		c         ezCommon
+		imageURL  string
+		imageFile string
 	)
 	cmd := &cobra.Command{
 		Use:   "image-to-3d",
 		Short: "Image → textured 3D → download",
-		Long:  `One-shot image-to-3d with texture enabled by default, then download.`,
+		Long: `One-shot image-to-3d with texture enabled by default, then download.
+
+Provide a public URL, data URI, or local file:
+  --image-url https://…
+  --image-file ./photo.png
+  --image-url ./photo.png   # local paths are auto-encoded to data URIs`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c.enablePBRSet = cmd.Flags().Changed("enable-pbr")
 			c.remeshSet = cmd.Flags().Changed("should-remesh")
-			if imageURL == "" {
-				return fmt.Errorf("--image-url is required")
+			src := imageURL
+			if imageFile != "" {
+				src = imageFile
 			}
-			return app.runEZImageTo3D(imageURL, c)
+			if src == "" {
+				return fmt.Errorf("--image-url or --image-file is required")
+			}
+			resolved, err := ResolveImageInput(src)
+			if err != nil {
+				return err
+			}
+			return app.runEZImageTo3D(resolved, c)
 		},
 	}
-	cmd.Flags().StringVar(&imageURL, "image-url", "", "Source image URL or data URI (required)")
+	cmd.Flags().StringVar(&imageURL, "image-url", "", "Image URL, data URI, or local file path")
+	cmd.Flags().StringVar(&imageFile, "image-file", "", "Local image file (jpg/png → data URI)")
+	cmd.Flags().StringVar(&imageFile, "image", "", "Alias for --image-file")
 	addEZCommonFlags(cmd, &c)
 	return cmd
 }
@@ -156,9 +168,12 @@ func (app *App) resolveEZProfile(name string) (*Profile, error) {
 	if name == "" {
 		return app.Profile, nil
 	}
-	p, ok := ProfileByName(name)
+	p, ok, err := ResolveProfile(app.Store, name)
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
-		return nil, fmt.Errorf("unknown profile %q (try: meshy ez profiles)", name)
+		return nil, fmt.Errorf("unknown profile %q (try: meshy profile list)", name)
 	}
 	app.Profile = &p
 	return &p, nil

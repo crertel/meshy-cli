@@ -66,8 +66,8 @@ Both use `sh -c`. Values are available as:
 
 Global flag (applies to create / download / ez):
 
-| Profile | Intent |
-|---------|--------|
+| Built-in | Intent |
+|----------|--------|
 | `game-lowpoly` | Remesh, ~30k polys, glb |
 | `game-hero` | Medium poly, PBR, glb |
 | `cinema` | Higher poly, glb+fbx + loose PBR maps |
@@ -78,7 +78,29 @@ Global flag (applies to create / download / ez):
 meshy --profile cinema text-to-3d create-preview --prompt "…" --sync
 ```
 
-Explicit flags always win over the profile.
+**User profiles (CRUD, SQLite):**
+
+```bash
+meshy profile list
+meshy profile show game-hero
+meshy profile create my-game --from game-lowpoly --target-polycount 15000 --description "mobile"
+meshy profile update my-game --download-formats glb,fbx --textures
+meshy profile delete my-game
+meshy --profile my-game ez textured-3d --prompt "…"
+```
+
+User profiles with the same name **shadow** built-ins. Deleting the user row restores the built-in. Built-ins cannot be deleted. Explicit flags always win over the profile.
+
+## Local image files
+
+Meshy accepts public URLs or **data URIs**. Local files are auto-encoded:
+
+```bash
+meshy image-to-3d create --image-file ./photo.png --sync --download
+meshy image-to-3d create --image-url ./photo.png   # path also works
+meshy multi-image-to-3d create --image-files a.png,b.png --sync
+meshy ez image-to-3d --image ./photo.png -o ./out/hero
+```
 
 ## Resources & async verbs
 

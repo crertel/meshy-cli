@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -137,16 +138,19 @@ func addSyncDownloadFlags(cmd *cobra.Command, opts *createOpts) {
 
 func addCommonCreateFlags(cmd *cobra.Command) {
 	cmd.Flags().String("prompt", "", "Text prompt")
-	cmd.Flags().String("image-url", "", "Image URL (or data URI)")
-	cmd.Flags().StringSlice("image-urls", nil, "Multiple image URLs")
-	cmd.Flags().String("model-url", "", "Input model URL")
+	cmd.Flags().String("image-url", "", "Image URL, data URI, or local file path")
+	cmd.Flags().String("image-file", "", "Local image file (converted to data URI; alias of path in --image-url)")
+	cmd.Flags().StringSlice("image-urls", nil, "Multiple image URLs, data URIs, or local paths")
+	cmd.Flags().StringSlice("image-files", nil, "Local image files (converted to data URIs)")
+	cmd.Flags().String("model-url", "", "Input model URL or local path (data URI)")
 	cmd.Flags().String("input-task-id", "", "Upstream Meshy task id")
 	cmd.Flags().String("preview-task-id", "", "Preview task id (text-to-3d refine)")
 	cmd.Flags().String("ai-model", "", "AI model (latest, meshy-6, meshy-5, ...)")
 	cmd.Flags().Bool("should-texture", false, "Enable texturing")
 	cmd.Flags().Bool("enable-pbr", false, "Enable PBR maps")
 	cmd.Flags().String("texture-prompt", "", "Texture text prompt")
-	cmd.Flags().String("texture-image-url", "", "Texture image URL")
+	cmd.Flags().String("texture-image-url", "", "Texture image URL, data URI, or local file")
+	cmd.Flags().String("texture-image-file", "", "Local texture guide image file")
 	cmd.Flags().String("target-format", "", "Target format (convert)")
 	cmd.Flags().Int("target-polycount", 0, "Target polycount")
 	cmd.Flags().String("action-id", "", "Animation action id")
@@ -177,23 +181,87 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 		}
 	}
 	setStr("prompt", "prompt")
-	setStr("image-url", "image_url")
-	setStr("model-url", "model_url")
 	setStr("input-task-id", "input_task_id")
 	setStr("preview-task-id", "preview_task_id")
 	setStr("ai-model", "ai_model")
 	setStr("texture-prompt", "texture_prompt")
-	setStr("texture-image-url", "texture_image_url")
 	setStr("target-format", "target_formats")
 	setStr("action-id", "action_id")
 	setStr("rig-task-id", "rig_task_id")
 	setBool("should-texture", "should_texture")
 	setBool("enable-pbr", "enable_pbr")
 	setInt("target-polycount", "target_polycount")
+
+	// Image inputs: URL / data URI / local file → data URI
+	if cmd.Flags().Changed("image-file") {
+		path, _ := cmd.Flags().GetString("image-file")
+		uri, err := ImageFileToDataURI(path)
+		if err != nil {
+			return err
+		}
+		body["image_url"] = uri
+	} else if cmd.Flags().Changed("image-url") {
+		v, _ := cmd.Flags().GetString("image-url")
+		uri, err := ResolveImageInput(v)
+		if err != nil {
+			return err
+		}
+		body["image_url"] = uri
+	}
+	if cmd.Flags().Changed("texture-image-file") {
+		path, _ := cmd.Flags().GetString("texture-image-file")
+		uri, err := ImageFileToDataURI(path)
+		if err != nil {
+			return err
+		}
+		body["texture_image_url"] = uri
+	} else if cmd.Flags().Changed("texture-image-url") {
+		v, _ := cmd.Flags().GetString("texture-image-url")
+		uri, err := ResolveImageInput(v)
+		if err != nil {
+			return err
+		}
+		body["texture_image_url"] = uri
+	}
+	if cmd.Flags().Changed("model-url") {
+		v, _ := cmd.Flags().GetString("model-url")
+		v = strings.TrimSpace(v)
+		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") || strings.HasPrefix(v, "data:") {
+			body["model_url"] = v
+		} else if data, err := os.ReadFile(v); err == nil {
+			// local mesh/file → data URI (Meshy accepts data URIs for model_url)
+			mime := "application/octet-stream"
+			if strings.HasSuffix(strings.ToLower(v), ".glb") {
+				mime = "model/gltf-binary"
+			}
+			body["model_url"] = "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+		} else {
+			return fmt.Errorf("model-url: %w", err)
+		}
+	}
+
+	var imageList []string
 	if cmd.Flags().Changed("image-urls") {
 		v, _ := cmd.Flags().GetStringSlice("image-urls")
-		if len(v) > 0 {
-			body["image_urls"] = v
+		imageList = append(imageList, v...)
+	}
+	if cmd.Flags().Changed("image-files") {
+		v, _ := cmd.Flags().GetStringSlice("image-files")
+		imageList = append(imageList, v...)
+	}
+	if len(imageList) > 0 {
+		resolved := make([]string, 0, len(imageList))
+		for _, item := range imageList {
+			uri, err := ResolveImageInput(item)
+			if err != nil {
+				return err
+			}
+			resolved = append(resolved, uri)
+		}
+		body["image_urls"] = resolved
+		// image-to-image API field
+		if _, has := body["reference_image_urls"]; !has {
+			body["reference_image_urls"] = resolved
 		}
 	}
 	if tf, ok := body["target_formats"].(string); ok && tf != "" {

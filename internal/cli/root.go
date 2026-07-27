@@ -113,6 +113,7 @@ Examples:
 	root.AddCommand(app.printGroupCmd())
 	root.AddCommand(app.creativeLabCmd())
 	root.AddCommand(app.ezCmd())
+	root.AddCommand(app.profileCmd())
 	root.AddCommand(app.balanceCmd())
 	root.AddCommand(app.configCmd())
 	root.AddCommand(app.sessionCmd())
@@ -158,9 +159,12 @@ func (app *App) setup() error {
 	app.Cfg = cfg
 
 	if app.FlagProfile != "" {
-		p, ok := ProfileByName(app.FlagProfile)
+		p, ok, err := ResolveProfile(app.Store, app.FlagProfile)
+		if err != nil {
+			return err
+		}
 		if !ok {
-			return fmt.Errorf("unknown profile %q (try: meshy ez profiles)", app.FlagProfile)
+			return fmt.Errorf("unknown profile %q (try: meshy profile list)", app.FlagProfile)
 		}
 		app.Profile = &p
 	}

@@ -1,0 +1,54 @@
+package cli_test
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/crertel/meshy-cli/internal/cli"
+)
+
+func TestImageFileToDataURI(t *testing.T) {
+	// minimal PNG 1x1
+	png := []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+		0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41,
+		0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xfe,
+		0xd4, 0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+		0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dot.png")
+	if err := os.WriteFile(path, png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uri, err := cli.ImageFileToDataURI(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(uri, "data:image/png;base64,") {
+		t.Fatalf("uri prefix: %s", uri[:min(40, len(uri))])
+	}
+	// ResolveImageInput on path
+	uri2, err := cli.ResolveImageInput(path)
+	if err != nil || uri2 != uri {
+		t.Fatalf("resolve path: %v %q", err, uri2)
+	}
+	// pass through URL
+	u, err := cli.ResolveImageInput("https://example.com/a.png")
+	if err != nil || u != "https://example.com/a.png" {
+		t.Fatalf("url: %v %q", err, u)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

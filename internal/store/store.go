@@ -89,6 +89,14 @@ CREATE TABLE IF NOT EXISTS tags (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
+
+CREATE TABLE IF NOT EXISTS profiles (
+  name TEXT PRIMARY KEY,
+  description TEXT NOT NULL DEFAULT '',
+  data_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `
 	_, err := s.db.Exec(schema)
 	return err
@@ -402,4 +410,79 @@ func (s *Store) UpdateTaskStatus(id, status string) error {
 		status, time.Now().UnixMilli(), id,
 	)
 	return err
+}
+
+// --- User profiles (JSON blobs) ---
+
+// StoredProfile is a user-defined profile row.
+type StoredProfile struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	DataJSON    string `json:"data_json"`
+	CreatedAt   int64  `json:"created_at"`
+	UpdatedAt   int64  `json:"updated_at"`
+}
+
+// UpsertProfile inserts or updates a user profile by name.
+func (s *Store) UpsertProfile(name, description, dataJSON string) error {
+	now := time.Now().UnixMilli()
+	_, err := s.db.Exec(
+		`INSERT INTO profiles(name, description, data_json, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?)
+		 ON CONFLICT(name) DO UPDATE SET
+		   description=excluded.description,
+		   data_json=excluded.data_json,
+		   updated_at=excluded.updated_at`,
+		name, description, dataJSON, now, now,
+	)
+	return err
+}
+
+// GetProfile returns a user profile by name.
+func (s *Store) GetProfile(name string) (StoredProfile, bool, error) {
+	var p StoredProfile
+	err := s.db.QueryRow(
+		`SELECT name, description, data_json, created_at, updated_at FROM profiles WHERE name = ?`,
+		name,
+	).Scan(&p.Name, &p.Description, &p.DataJSON, &p.CreatedAt, &p.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return StoredProfile{}, false, nil
+	}
+	if err != nil {
+		return StoredProfile{}, false, err
+	}
+	return p, true, nil
+}
+
+// ListProfiles returns all user profiles ordered by name.
+func (s *Store) ListProfiles() ([]StoredProfile, error) {
+	rows, err := s.db.Query(
+		`SELECT name, description, data_json, created_at, updated_at FROM profiles ORDER BY name`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []StoredProfile
+	for rows.Next() {
+		var p StoredProfile
+		if err := rows.Scan(&p.Name, &p.Description, &p.DataJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// DeleteProfile removes a user profile.
+func (s *Store) DeleteProfile(name string) error {
+	res, err := s.db.Exec(`DELETE FROM profiles WHERE name = ?`, name)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("profile %q not found", name)
+	}
+	return nil
 }
