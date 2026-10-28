@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -206,6 +207,106 @@ func TestResourceMapCoversFamilies(t *testing.T) {
 	}
 	if _, ok := api.ResourceByName("image-to-3d"); !ok {
 		t.Fatal("image-to-3d missing")
+	}
+	for _, name := range []string{"print-split", "text-to-motion", "cl-brick-figure-build", "cl-keycap-build", "cl-fidget-pixel-prototype", "cl-fidget-collapsible"} {
+		r, ok := api.ResourceByName(name)
+		if !ok {
+			t.Fatalf("missing resource %s", name)
+		}
+		if !r.HasList || !r.HasDelete || r.Path == "" {
+			t.Fatalf("%s incomplete: %#v", name, r)
+		}
+	}
+	for _, name := range []string{"rigging", "animation"} {
+		r, ok := api.ResourceByName(name)
+		if !ok || !r.HasList {
+			t.Fatalf("%s should list", name)
+		}
+	}
+	wantModels := map[string]bool{
+		"nano-banana-2-lite":     false,
+		"gpt-image-2-5-flare":    false,
+		"gpt-image-2-5-sunburst": false,
+	}
+	for _, m := range api.KnownImageModels {
+		if _, ok := wantModels[m.ID]; ok {
+			wantModels[m.ID] = true
+		}
+	}
+	for id, seen := range wantModels {
+		if !seen {
+			t.Errorf("image model catalog missing %s", id)
+		}
+	}
+}
+
+func TestCreateMetadataHeader(t *testing.T) {
+	var gotMeta []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /openapi/v1/image-to-3d", func(w http.ResponseWriter, r *http.Request) {
+		gotMeta = append(gotMeta, r.Header.Get("X-Meshy-Metadata"))
+		_ = json.NewEncoder(w).Encode(map[string]string{"result": "t1"})
+	})
+	mux.HandleFunc("POST /openapi/creative-lab/keychain/v1/prototype", func(w http.ResponseWriter, r *http.Request) {
+		gotMeta = append(gotMeta, "cl:"+r.Header.Get("X-Meshy-Metadata"))
+		_ = json.NewEncoder(w).Encode(map[string]string{"result": "t2"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := api.NewClient(srv.URL, "k", srv.Client())
+	c.Metadata = "user=alex@example.com,team=fab"
+	if _, err := c.Create(context.Background(), "/openapi/v1/image-to-3d", map[string]any{"image_url": "https://x/a.png"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Create(context.Background(), "/openapi/creative-lab/keychain/v1/prototype", map[string]any{"image_url": "https://x/a.png"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotMeta) != 2 || gotMeta[0] != "user=alex@example.com,team=fab" || gotMeta[1] != "cl:" {
+		t.Fatalf("metadata headers: %#v", gotMeta)
+	}
+}
+
+func TestListSortAndUsageQuery(t *testing.T) {
+	var got []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /openapi/v1/image-to-3d", func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.URL.RawQuery)
+		_ = json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	mux.HandleFunc("GET /openapi/v1/usage/tasks", func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.URL.RawQuery)
+		_ = json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	mux.HandleFunc("GET /openapi/v1/animations/library", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			t.Errorf("library missing auth")
+		}
+		got = append(got, r.URL.RawQuery)
+		_, _ = w.Write([]byte(`[{"action_id":92}]`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := api.NewClient(srv.URL, "k", srv.Client())
+	if _, err := c.ListSorted(context.Background(), "/openapi/v1/image-to-3d", 2, 5, "-created_at"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ListUsage(context.Background(), api.UsageFilter{
+		PageNum: 1, PageSize: 50, StartTime: "2026-08-01T00:00:00Z", Endpoints: "image-to-3d", Status: "SUCCEEDED",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := c.AnimationLibrary(context.Background(), api.AnimationLibraryQuery{Category: "Fighting", Search: "walk"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "92") {
+		t.Fatalf("library body %s", raw)
+	}
+	joined := strings.Join(got, " | ")
+	for _, want := range []string{"sort_by=-created_at", "page_num=2", "start_time=", "endpoints=image-to-3d", "status=SUCCEEDED", "category=Fighting", "search=walk"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("query %q missing from %s", want, joined)
+		}
 	}
 }
 

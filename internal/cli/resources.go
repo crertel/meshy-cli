@@ -153,24 +153,35 @@ func addCommonCreateFlags(cmd *cobra.Command) {
 	cmd.Flags().String("model-url", "", "Input model URL or local path (data URI)")
 	cmd.Flags().String("input-task-id", "", "Upstream Meshy task id")
 	cmd.Flags().String("preview-task-id", "", "Preview task id (text-to-3d refine)")
+	cmd.Flags().String("negative-prompt", "", "What the generation should avoid")
+	cmd.Flags().String("task-name", "", "API task name (distinct from download --name)")
+	cmd.Flags().String("candidate-id", "", "Creative Lab build: candidate id from the prototype task")
 
 	// Model / mesh
-	cmd.Flags().String("ai-model", "", "AI model (latest, meshy-6, meshy-5, nano-banana, …)")
-	cmd.Flags().String("model-type", "", "Mesh type: standard | smart-topology | lowpoly")
+	cmd.Flags().String("ai-model", "", "AI model (latest, meshy-7.1, meshy-6, meshy-6-lite, meshy-t2.5, nano-banana, …). meshy-5 is retired")
+	cmd.Flags().String("model-type", "", "Pipeline: standard | smart-topology (with meshy-t2 or meshy-t2.5). lowpoly retires 2026-10-30")
 	cmd.Flags().String("topology", "", "triangle | quad")
 	cmd.Flags().Int("target-polycount", 0, "Target polycount")
 	cmd.Flags().Int("decimation-mode", 0, "Adaptive decimation 1–4 (ultra…low)")
 	cmd.Flags().Bool("should-remesh", false, "Enable remesh phase")
 	cmd.Flags().Bool("save-pre-remeshed-model", false, "Also store pre-remesh GLB")
-	cmd.Flags().String("pose-mode", "", "a-pose | t-pose | empty")
+	cmd.Flags().Bool("convert-format-only", false, "Remesh: re-export formats without remeshing")
+	cmd.Flags().String("pose-mode", "", "a-pose | t-pose")
+	cmd.Flags().String("geometry-resolution", "", "Geometry detail: standard | 2k | 4k (meshy-7.1 or latest; replaces ultra_mode)")
+	cmd.Flags().Int("seed", 0, "RNG seed (0 randomizes)")
+	cmd.Flags().Int("count", 0, "Number of text-to-3d candidates")
+	cmd.Flags().String("mode", "", "Request mode (text-to-motion prime|swift; print split auto|by_parts|by_color)")
+	cmd.Flags().Float64("duration", 0, "Text-to-motion clip length in seconds (2–10, step 0.5)")
 	cmd.Flags().StringSlice("target-formats", nil, "Output formats, CSV or repeatable (glb,fbx,obj,stl,usdz,3mf,blend)")
 
 	// Texturing (image/text-to-3d refine, multi-image)
 	cmd.Flags().Bool("should-texture", false, "Enable texturing")
 	cmd.Flags().Bool("enable-pbr", false, "Enable PBR maps")
 	cmd.Flags().String("texture-prompt", "", "Texture text prompt (generation refine / i2 3d)")
-	cmd.Flags().String("texture-image-url", "", "Texture image URL, data URI, or local file")
-	cmd.Flags().String("texture-image-file", "", "Local texture guide image file")
+	cmd.Flags().String("texture-image-url", "", "Texture reference image URL, data URI, or local file (deprecated on rigging)")
+	cmd.Flags().String("texture-image-file", "", "Local texture guide image file (deprecated on rigging)")
+	cmd.Flags().StringSlice("texture-image-urls", nil, "1–4 texture reference views (multi-image-to-3d, Meshy 7)")
+	cmd.Flags().StringSlice("texture-image-files", nil, "Local files for --texture-image-urls")
 	cmd.Flags().String("texture-resolution", "", "Base color resolution: 2k | 4k | 8k")
 	cmd.Flags().Bool("image-enhancement", false, "Input image enhancement (meshy-6+)")
 	cmd.Flags().Bool("remove-lighting", false, "Remove baked lighting from textures")
@@ -179,11 +190,14 @@ func addCommonCreateFlags(cmd *cobra.Command) {
 	cmd.Flags().String("text-style-prompt", "", "Retexture: text style prompt")
 	cmd.Flags().String("image-style-url", "", "Retexture: style image URL, data URI, or local path")
 	cmd.Flags().String("image-style-file", "", "Retexture: local style image file")
+	cmd.Flags().StringSlice("multiview-image-urls", nil, "Retexture: 1–4 views of one object (requires ai_model meshy-7)")
+	cmd.Flags().StringSlice("multiview-image-files", nil, "Local files for --multiview-image-urls")
 	cmd.Flags().Bool("enable-original-uv", false, "Retexture: keep existing UV layout")
 
 	// 2D image APIs
 	cmd.Flags().String("aspect-ratio", "", "Image aspect ratio (1:1, 16:9, …)")
 	cmd.Flags().Bool("generate-multi-view", false, "Generate multi-view images (2D APIs)")
+	cmd.Flags().Bool("remove-background", false, "Text/image-to-image: return a transparent RGBA cutout")
 
 	// Sizing / previews
 	cmd.Flags().Bool("moderation", false, "Content moderation on inputs")
@@ -196,13 +210,35 @@ func addCommonCreateFlags(cmd *cobra.Command) {
 
 	// Rigging / animation
 	cmd.Flags().Float64("height-meters", 0, "Character height for rigging")
+	cmd.Flags().String("animation-type", "", "Rigging skeleton: biped | quadruped")
 	cmd.Flags().Int("action-id", 0, "Animation action_id (see animation library)")
+	cmd.Flags().IntSlice("action-ids", nil, "Apply several library actions as clips in one file (max 10)")
+	cmd.Flags().String("motion-task-id", "", "Text-to-motion task to retarget (biped rigs only)")
 	cmd.Flags().String("rig-task-id", "", "Rigging task id (animation)")
 	cmd.Flags().String("post-process-operation", "", "Animation post_process.operation_type: change_fps|fbx2usdz|extract_armature")
 	cmd.Flags().Int("post-process-fps", 0, "Animation post_process.fps (24|25|30|60)")
 
 	// Print
 	cmd.Flags().Int("max-colors", 0, "Multi-color print: palette size 1–16")
+	cmd.Flags().String("style", "", "Multi-color placement: realistic | cartoon")
+	cmd.Flags().Int("max-depth", 0, "Multi-color quadtree depth (realistic style)")
+	cmd.Flags().String("printer-brand", "", "Multi-color 3MF slicer preset: bambu, anycubic, creality, flashforge, snapmaker, elegoo, prusa, qidi, ankermake")
+	cmd.Flags().String("printer-type", "", "Analyze/repair wall check: fdm | sla | full_color")
+	cmd.Flags().Float64("intended-print-height-mm", 0, "Planned print height in millimeters")
+	cmd.Flags().Float64("intended-print-longest-side-mm", 0, "Planned print longest side in millimeters")
+	cmd.Flags().String("layout", "", "Print split arrangement: assembled | on_plate")
+	cmd.Flags().Bool("connectors", false, "Print split: add mortise-and-tenon connectors")
+	cmd.Flags().String("connector-type", "", "Print split connector shape: cube | cylinder")
+	cmd.Flags().Float64("connector-size", 0, "Print split connector size relative to the cut")
+	cmd.Flags().Float64("connector-height", 0, "Print split connector height relative to the cut")
+
+	// Creative Lab fidget-pixel build
+	cmd.Flags().String("shape", "", "Fidget-pixel piece shape: square | hex")
+	cmd.Flags().Int("grid-size", 0, "Fidget-pixel grid cells per side: 16 | 32")
+	cmd.Flags().Int("piece-size-mm", 0, "Fidget-pixel piece edge in mm: 6 | 8 | 10")
+	cmd.Flags().Int("color-count", 0, "Fidget-pixel palette size 1–8")
+	cmd.Flags().Int("piece-height-mm", 0, "Fidget-pixel piece height in mm (10–80)")
+	cmd.Flags().String("output-format", "", "Fidget-pixel result format (3mf)")
 }
 
 func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
@@ -235,10 +271,22 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 		}
 	}
 	setStr("prompt", "prompt")
+	setStr("negative-prompt", "negative_prompt")
+	setStr("task-name", "name")
+	setStr("candidate-id", "candidate_id")
 	setStr("input-task-id", "input_task_id")
 	setStr("preview-task-id", "preview_task_id")
 	setStr("ai-model", "ai_model")
 	setStr("model-type", "model_type")
+	setStr("geometry-resolution", "geometry_resolution")
+	setStr("mode", "mode")
+	setStr("animation-type", "animation_type")
+	setStr("motion-task-id", "motion_task_id")
+	setStr("style", "style")
+	setStr("printer-brand", "printer_brand")
+	setStr("printer-type", "printer_type")
+	setStr("layout", "layout")
+	setStr("connector-type", "connector_type")
 	setStr("texture-prompt", "texture_prompt")
 	setStr("text-style-prompt", "text_style_prompt")
 	setStr("texture-resolution", "texture_resolution")
@@ -259,13 +307,51 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 	setBool("alpha-thumbnail", "alpha_thumbnail")
 	setBool("multi-view-thumbnails", "multi_view_thumbnails")
 	setBool("enable-original-uv", "enable_original_uv")
+	setBool("remove-background", "remove_background")
+	setBool("convert-format-only", "convert_format_only")
+	setBool("connectors", "connectors")
 	setInt("target-polycount", "target_polycount")
 	setInt("decimation-mode", "decimation_mode")
 	setInt("action-id", "action_id")
 	setInt("max-colors", "max_colors")
+	setInt("max-depth", "max_depth")
+	setInt("seed", "seed")
+	setInt("count", "count")
 	setFloat("resize-height", "resize_height")
 	setFloat("resize-longest-side", "resize_longest_side")
 	setFloat("height-meters", "height_meters")
+	setFloat("duration", "duration")
+	setFloat("intended-print-height-mm", "intended_print_height_mm")
+	setFloat("intended-print-longest-side-mm", "intended_print_longest_side_mm")
+	setFloat("connector-size", "connector_size")
+	setFloat("connector-height", "connector_height")
+
+	if cmd.Flags().Changed("action-ids") {
+		ids, _ := cmd.Flags().GetIntSlice("action-ids")
+		if len(ids) > 0 {
+			body["action_ids"] = ids
+		}
+	}
+	setOptInt := func(flag, key string) {
+		if cmd.Flags().Changed(flag) {
+			v, _ := cmd.Flags().GetInt(flag)
+			nestField(body, "options", key, v)
+		}
+	}
+	setOptInt("grid-size", "grid_size")
+	setOptInt("piece-size-mm", "piece_size_mm")
+	setOptInt("color-count", "color_count")
+	setOptInt("piece-height-mm", "piece_height_mm")
+	if cmd.Flags().Changed("shape") {
+		if v, _ := cmd.Flags().GetString("shape"); v != "" {
+			nestField(body, "options", "shape", v)
+		}
+	}
+	if cmd.Flags().Changed("output-format") {
+		if v, _ := cmd.Flags().GetString("output-format"); v != "" {
+			nestField(body, "output", "format", v)
+		}
+	}
 
 	// Animation nested post_process
 	if cmd.Flags().Changed("post-process-operation") {
@@ -360,37 +446,33 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 		}
 	}
 
-	var imageList []string
-	if cmd.Flags().Changed("image-urls") {
-		v, _ := cmd.Flags().GetStringSlice("image-urls")
-		imageList = append(imageList, v...)
-	}
-	if cmd.Flags().Changed("image-files") {
-		v, _ := cmd.Flags().GetStringSlice("image-files")
-		imageList = append(imageList, v...)
+	imageList, err := changedImageSlice(cmd, "image-urls", "image-files")
+	if err != nil {
+		return err
 	}
 	if len(imageList) > 0 {
-		resolved := make([]string, 0, len(imageList))
-		for _, item := range imageList {
-			uri, err := ResolveImageInput(item)
-			if err != nil {
-				return err
-			}
-			resolved = append(resolved, uri)
-		}
-		body["image_urls"] = resolved
+		body["image_urls"] = imageList
+	}
+	textureViews, err := changedImageSlice(cmd, "texture-image-urls", "texture-image-files")
+	if err != nil {
+		return err
+	}
+	if len(textureViews) > 0 {
+		body["texture_image_urls"] = textureViews
+	}
+	multiview, err := changedImageSlice(cmd, "multiview-image-urls", "multiview-image-files")
+	if err != nil {
+		return err
+	}
+	if len(multiview) > 0 {
+		body["multiview_image_urls"] = multiview
 	}
 
 	// image-to-image only: reference_image_urls (do not set from image_urls for multi-image-to-3d)
 	if cmd.Flags().Changed("reference-image-urls") {
-		v, _ := cmd.Flags().GetStringSlice("reference-image-urls")
-		resolved := make([]string, 0, len(v))
-		for _, item := range v {
-			uri, err := ResolveImageInput(item)
-			if err != nil {
-				return err
-			}
-			resolved = append(resolved, uri)
+		resolved, err := changedImageSlice(cmd, "reference-image-urls")
+		if err != nil {
+			return err
 		}
 		body["reference_image_urls"] = resolved
 	} else if img, ok := body["image_url"].(string); ok && img != "" {
@@ -404,6 +486,41 @@ func mergeCreateFlags(cmd *cobra.Command, body map[string]any) error {
 	}
 
 	return nil
+}
+
+func nestField(body map[string]any, parent, key string, val any) {
+	m, _ := body[parent].(map[string]any)
+	if m == nil {
+		m = map[string]any{}
+		body[parent] = m
+	}
+	m[key] = val
+}
+
+func changedImageSlice(cmd *cobra.Command, flags ...string) ([]string, error) {
+	var items []string
+	for _, flag := range flags {
+		if !cmd.Flags().Changed(flag) {
+			continue
+		}
+		v, err := cmd.Flags().GetStringSlice(flag)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, v...)
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	resolved := make([]string, 0, len(items))
+	for _, item := range items {
+		uri, err := ResolveImageInput(item)
+		if err != nil {
+			return nil, err
+		}
+		resolved = append(resolved, uri)
+	}
+	return resolved, nil
 }
 
 func parseBody(file, raw string) (map[string]any, error) {
@@ -603,6 +720,7 @@ func (app *App) getCmd(res api.Resource) *cobra.Command {
 
 func (app *App) listCmd(res api.Resource) *cobra.Command {
 	var pageNum, pageSize int
+	var sortBy string
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List " + res.Name + " tasks",
@@ -610,7 +728,7 @@ func (app *App) listCmd(res api.Resource) *cobra.Command {
 			if err := RequireAPIKey(app.Client.APIKey); err != nil {
 				return err
 			}
-			tasks, err := app.Client.List(app.ctx(), res.Path, pageNum, pageSize)
+			tasks, err := app.Client.ListSorted(app.ctx(), res.Path, pageNum, pageSize, sortBy)
 			if err != nil {
 				return err
 			}
@@ -619,6 +737,7 @@ func (app *App) listCmd(res api.Resource) *cobra.Command {
 	}
 	cmd.Flags().IntVar(&pageNum, "page", 1, "Page number")
 	cmd.Flags().IntVar(&pageSize, "page-size", 10, "Page size")
+	cmd.Flags().StringVar(&sortBy, "sort", "", "Sort key; a leading - sorts descending (default -created_at)")
 	return cmd
 }
 
@@ -828,39 +947,38 @@ func (app *App) imageModelsCmd(res api.Resource) *cobra.Command {
 }
 
 func (app *App) animationLibraryCmd() *cobra.Command {
-	return &cobra.Command{
+	var search, category, subCategory, actionIDs string
+	cmd := &cobra.Command{
 		Use:   "library",
-		Short: "Fetch the public Meshy animation library (action_id catalog)",
-		Long:  `GET https://api.meshy.ai/web/public/animations/resources — use action_id values with animation create --action-id.`,
+		Short: "List preset animations (action_id catalog)",
+		Long:  `GET /openapi/v1/animations/library. Use action_id values with animation create --action-id or --action-ids.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Public endpoint; still use client HTTP for injectability
-			base := app.Client.BaseURL
-			if base == "" {
-				base = api.DefaultBaseURL
+			if err := RequireAPIKey(app.Client.APIKey); err != nil {
+				return err
 			}
-			url := strings.TrimRight(base, "/") + "/web/public/animations/resources"
-			// Animation catalog is on the main host, not always under openapi base only
-			if !strings.Contains(url, "api.meshy.ai") && app.Cfg.BaseURL != "" {
-				// keep as-is for mocks
-			}
-			data, err := app.Client.Download(app.ctx(), url)
+			raw, err := app.Client.AnimationLibrary(app.ctx(), api.AnimationLibraryQuery{
+				Search:      search,
+				Category:    category,
+				SubCategory: subCategory,
+				ActionIDs:   actionIDs,
+			})
 			if err != nil {
-				// fallback hard-coded public URL if base was openapi-only mock
-				data, err = app.Client.Download(app.ctx(), "https://api.meshy.ai/web/public/animations/resources")
-				if err != nil {
-					return fmt.Errorf("fetch animation library: %w", err)
-				}
+				return fmt.Errorf("fetch animation library: %w", err)
 			}
 			if app.JSON {
-				// pass through raw JSON
 				var v any
-				if err := json.Unmarshal(data, &v); err != nil {
+				if err := json.Unmarshal(raw, &v); err != nil {
 					return err
 				}
 				return app.Print.JSONValue(v)
 			}
-			fmt.Fprintln(app.Print.Out, string(data))
+			fmt.Fprintln(app.Print.Out, string(raw))
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&search, "search", "", "Case-insensitive match on name or key")
+	cmd.Flags().StringVar(&category, "category", "", "WalkAndRun | BodyMovements | DailyActions | Fighting | Dancing")
+	cmd.Flags().StringVar(&subCategory, "sub-category", "", "Exact sub_category match")
+	cmd.Flags().StringVar(&actionIDs, "action-ids", "", "Comma-separated action_id values to return (max 200)")
+	return cmd
 }

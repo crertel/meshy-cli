@@ -464,10 +464,13 @@ var KnownImageModels = []struct {
 	ID          string
 	Description string
 }{
-	{"nano-banana", "Standard model (3 credits per image)"},
-	{"nano-banana-2", "Balanced / stronger (6 credits per image)"},
-	{"nano-banana-pro", "Pro quality (9 credits per image)"},
-	{"gpt-image-2", "OpenAI GPT Image 2 (higher cost; limited aspect ratios)"},
+	{"nano-banana", "Standard image model"},
+	{"nano-banana-2", "More capable than nano-banana"},
+	{"nano-banana-2-lite", "Lite version of nano-banana-2"},
+	{"nano-banana-pro", "Pro quality (Pro plan or higher)"},
+	{"gpt-image-2", "OpenAI GPT Image 2"},
+	{"gpt-image-2-5-flare", "OpenAI GPT Image 2.5 (Flare)"},
+	{"gpt-image-2-5-sunburst", "OpenAI GPT Image 2.5 (Sunburst)"},
 }
 
 // Slugify makes a filesystem-safe short name from a prompt or label.

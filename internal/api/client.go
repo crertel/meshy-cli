@@ -22,6 +22,9 @@ type Client struct {
 	BaseURL    string
 	APIKey     string
 	HTTPClient *http.Client
+	// Metadata is an X-Meshy-Metadata value (W3C baggage: k=v,k=v).
+	// Create sends it on every task except Creative Lab, which ignores the header.
+	Metadata string
 }
 
 // NewClient returns a client with defaults applied.
@@ -138,7 +141,7 @@ func truncate(s string, n int) string {
 }
 
 // doJSON performs an authenticated JSON request.
-func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, body any, out any) error {
+func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, body any, out any, headers map[string]string) error {
 	if c.APIKey == "" {
 		return fmt.Errorf("missing API key: set --api-key, MESHY_API_KEY, or `meshy config set api_key <key>`")
 	}
@@ -162,6 +165,11 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		if v != "" {
+			req.Header.Set(k, v)
+		}
 	}
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -194,9 +202,15 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 }
 
 // Create posts a create body to path and returns the task id.
+// When Client.Metadata is set, the request includes X-Meshy-Metadata,
+// except on Creative Lab paths.
 func (c *Client) Create(ctx context.Context, path string, body any) (string, error) {
+	var headers map[string]string
+	if c.Metadata != "" && !strings.Contains(path, "/creative-lab/") {
+		headers = map[string]string{"X-Meshy-Metadata": c.Metadata}
+	}
 	var res CreateResult
-	if err := c.doJSON(ctx, http.MethodPost, path, nil, body, &res); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, path, nil, body, &res, headers); err != nil {
 		return "", err
 	}
 	if res.Result == "" {
@@ -208,7 +222,7 @@ func (c *Client) Create(ctx context.Context, path string, body any) (string, err
 // Get retrieves a task by path (including id).
 func (c *Client) Get(ctx context.Context, path string) (Task, error) {
 	var t Task
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, nil, &t); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, nil, &t, nil); err != nil {
 		return nil, err
 	}
 	return t, nil
@@ -216,6 +230,16 @@ func (c *Client) Get(ctx context.Context, path string) (Task, error) {
 
 // List retrieves a page of tasks.
 func (c *Client) List(ctx context.Context, path string, pageNum, pageSize int) ([]Task, error) {
+	return c.ListSorted(ctx, path, pageNum, pageSize, "")
+}
+
+// ListSorted retrieves a page of tasks. sortBy is the sort_by query value
+// (a leading "-" sorts descending). Empty sortBy omits the parameter.
+func (c *Client) ListSorted(ctx context.Context, path string, pageNum, pageSize int, sortBy string) ([]Task, error) {
+	return c.listQuery(ctx, path, pageQuery(pageNum, pageSize, sortBy))
+}
+
+func pageQuery(pageNum, pageSize int, sortBy string) url.Values {
 	q := url.Values{}
 	if pageNum > 0 {
 		q.Set("page_num", strconv.Itoa(pageNum))
@@ -223,22 +247,89 @@ func (c *Client) List(ctx context.Context, path string, pageNum, pageSize int) (
 	if pageSize > 0 {
 		q.Set("page_size", strconv.Itoa(pageSize))
 	}
+	if sortBy != "" {
+		q.Set("sort_by", sortBy)
+	}
+	return q
+}
+
+func (c *Client) listQuery(ctx context.Context, path string, q url.Values) ([]Task, error) {
 	var tasks []Task
-	if err := c.doJSON(ctx, http.MethodGet, path, q, nil, &tasks); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, path, q, nil, &tasks, nil); err != nil {
 		return nil, err
 	}
 	return tasks, nil
 }
 
+// UsageFilter selects GET /openapi/v1/usage/tasks.
+// Times are RFC 3339 strings passed through to the API.
+type UsageFilter struct {
+	PageNum   int
+	PageSize  int
+	SortBy    string
+	StartTime string
+	EndTime   string
+	Endpoints string
+	Status    string
+}
+
+// ListUsage returns a page of usage records (Studio and Enterprise keys).
+func (c *Client) ListUsage(ctx context.Context, f UsageFilter) ([]Task, error) {
+	q := pageQuery(f.PageNum, f.PageSize, f.SortBy)
+	if f.StartTime != "" {
+		q.Set("start_time", f.StartTime)
+	}
+	if f.EndTime != "" {
+		q.Set("end_time", f.EndTime)
+	}
+	if f.Endpoints != "" {
+		q.Set("endpoints", f.Endpoints)
+	}
+	if f.Status != "" {
+		q.Set("status", f.Status)
+	}
+	return c.listQuery(ctx, "/openapi/v1/usage/tasks", q)
+}
+
+// AnimationLibraryQuery filters GET /openapi/v1/animations/library.
+type AnimationLibraryQuery struct {
+	Search      string
+	Category    string
+	SubCategory string
+	ActionIDs   string
+}
+
+// AnimationLibrary returns the raw JSON catalog of preset actions.
+func (c *Client) AnimationLibrary(ctx context.Context, q AnimationLibraryQuery) (json.RawMessage, error) {
+	v := url.Values{}
+	if q.Search != "" {
+		v.Set("search", q.Search)
+	}
+	if q.Category != "" {
+		v.Set("category", q.Category)
+	}
+	if q.SubCategory != "" {
+		v.Set("sub_category", q.SubCategory)
+	}
+	if q.ActionIDs != "" {
+		v.Set("action_ids", q.ActionIDs)
+	}
+	var raw json.RawMessage
+	if err := c.doJSON(ctx, http.MethodGet, "/openapi/v1/animations/library", v, nil, &raw, nil); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
 // Delete deletes a task.
 func (c *Client) Delete(ctx context.Context, path string) error {
-	return c.doJSON(ctx, http.MethodDelete, path, nil, nil, nil)
+	return c.doJSON(ctx, http.MethodDelete, path, nil, nil, nil, nil)
 }
 
 // GetBalance returns account balance.
 func (c *Client) GetBalance(ctx context.Context) (map[string]any, error) {
 	var out map[string]any
-	if err := c.doJSON(ctx, http.MethodGet, "/openapi/v1/balance", nil, nil, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, "/openapi/v1/balance", nil, nil, &out, nil); err != nil {
 		return nil, err
 	}
 	return out, nil

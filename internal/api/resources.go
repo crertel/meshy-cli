@@ -13,7 +13,7 @@ type Resource struct {
 	// CreateModes lists special create modes (preview/refine) for dual-mode endpoints.
 	// Empty means a single create verb.
 	CreateModes []string
-	// HasList is false for resources that only support get by id (e.g. some rigging list gaps).
+	// HasList is false when the collection has no GET list endpoint.
 	HasList bool
 	// HasDelete indicates DELETE is supported.
 	HasDelete bool
@@ -83,18 +83,22 @@ var AllResources = []Resource{
 		HasList:     true, HasDelete: true,
 	},
 	{
-		// Docs only document create/get/delete/stream (no list collection).
 		Name: "rigging", Group: "postprocess",
-		Description: "Add a skeleton to a humanoid character",
+		Description: "Add a biped or quadruped skeleton to a character",
 		Path:        "/openapi/v1/rigging",
-		HasList:     false, HasDelete: true,
+		HasList:     true, HasDelete: true,
 	},
 	{
-		// Docs only document create/get/delete/stream (no list collection).
 		Name: "animation", Group: "postprocess",
-		Description: "Apply animations to a rigged character",
+		Description: "Apply library or text-to-motion clips to a rigged character",
 		Path:        "/openapi/v1/animations",
-		HasList:     false, HasDelete: true,
+		HasList:     true, HasDelete: true,
+	},
+	{
+		Name: "text-to-motion", Group: "postprocess",
+		Description: "Generate a motion clip (FBX or BVH) from a text prompt",
+		Path:        "/openapi/v1/text-to-motion",
+		HasList:     true, HasDelete: true,
 	},
 	// 2D
 	{
@@ -126,6 +130,12 @@ var AllResources = []Resource{
 		Name: "print-repair", Group: "print",
 		Description: "Repair models for FDM printability",
 		Path:        "/openapi/v1/print/repair",
+		HasList:     true, HasDelete: true,
+	},
+	{
+		Name: "print-split", Group: "print",
+		Description: "Split a Meshy 6/7 model into printable parts",
+		Path:        "/openapi/v1/print/split",
 		HasList:     true, HasDelete: true,
 	},
 	// Creative Lab
@@ -187,6 +197,48 @@ var AllResources = []Resource{
 		Name: "cl-lamp-build", Group: "creative-lab",
 		Description: "Creative Lab lamp: build",
 		Path:        "/openapi/creative-lab/lamp/v1/build",
+		HasList:     true, HasDelete: true,
+	},
+	{
+		Name: "cl-brick-figure-prototype", Group: "creative-lab",
+		Description: "Creative Lab brick figure: prototype",
+		Path:        "/openapi/creative-lab/brick-figure/v1/prototype",
+		HasList:     true, HasDelete: true,
+	},
+	{
+		Name: "cl-brick-figure-build", Group: "creative-lab",
+		Description: "Creative Lab brick figure: build",
+		Path:        "/openapi/creative-lab/brick-figure/v1/build",
+		HasList:     true, HasDelete: true,
+	},
+	{
+		Name: "cl-keycap-prototype", Group: "creative-lab",
+		Description: "Creative Lab keycap: prototype",
+		Path:        "/openapi/creative-lab/keycap/v1/prototype",
+		HasList:     true, HasDelete: true,
+	},
+	{
+		Name: "cl-keycap-build", Group: "creative-lab",
+		Description: "Creative Lab keycap: build",
+		Path:        "/openapi/creative-lab/keycap/v1/build",
+		HasList:     true, HasDelete: true,
+	},
+	{
+		Name: "cl-fidget-pixel-prototype", Group: "creative-lab",
+		Description: "Creative Lab fidget pixel: prototype",
+		Path:        "/openapi/creative-lab/fidget-pixel/v1/prototype",
+		HasList:     true, HasDelete: true,
+	},
+	{
+		Name: "cl-fidget-pixel-build", Group: "creative-lab",
+		Description: "Creative Lab fidget pixel: build",
+		Path:        "/openapi/creative-lab/fidget-pixel/v1/build",
+		HasList:     true, HasDelete: true,
+	},
+	{
+		Name: "cl-fidget-collapsible", Group: "creative-lab",
+		Description: "Creative Lab collapsible fidget (single-stage photo to STL/GLB)",
+		Path:        "/openapi/creative-lab/fidget-collapsible/v1",
 		HasList:     true, HasDelete: true,
 	},
 }

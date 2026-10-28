@@ -197,10 +197,32 @@ meshy animation create \
   --post-process-fps 24 \
   --sync
 
-meshy print multi-color create --input-task-id <id> --max-colors 8 --sync --download
+meshy print multi-color create --input-task-id <id> --max-colors 8 --style realistic --printer-brand bambu --sync --download
+
+meshy print split create --input-task-id <id> --mode by_parts --prompt "head, torso" --connectors --layout on_plate
+
+meshy text-to-motion create --prompt "a character waving" --duration 3 --mode swift --sync
+
+meshy rigging create --input-task-id <id> --animation-type quadruped --height-meters 0.4
+
+meshy animation create --rig-task-id <id> --action-ids 10,25,92
+meshy animation create --rig-task-id <id> --motion-task-id <text-to-motion-id>
+
+meshy image-to-3d create --image-file ./a.png --geometry-resolution 2k --ai-model meshy-7.1
+meshy image-to-3d create --image-file ./a.png --model-type smart-topology --ai-model meshy-t2.5 --target-polycount 8000
+
+meshy creative-lab keycap build create --input-task-id <id> --candidate-id <candidate>
+meshy creative-lab fidget-pixel build create --input-task-id <id> --shape hex --grid-size 16 --output-format 3mf
+meshy creative-lab fidget-collapsible create --image-file ./photo.png --sync --download
+
+meshy --metadata user=alex@example.com --metadata team=fab image-to-3d create --image-file ./a.png
 ```
 
-Deprecated Meshy fields are **not** exposed as flags; use `--body` if you need them.
+`latest` on text-to-3d, image-to-3d, and multi-image-to-3d is `meshy-7.1`. On retexture, `latest` is `meshy-7` (`meshy-7.1` is rejected there). `meshy-5` is retired. `model_type: lowpoly` retires on 2026-10-30; use `smart-topology` with `meshy-t2.5` or `meshy-t2`.
+
+`--name` is the download filename prefix. The API task name is `--task-name`.
+
+Deprecated Meshy fields (`ultra_mode`, `hd_texture`, `symmetry_mode`, `art_style`, `is_a_t_pose`) are **not** exposed as flags; use `--body` if you need them. `geometry_resolution` replaces `ultra_mode`. Rigging `texture_image_url` is deprecated: omit it so the rig keeps the model's textures.
 
 Local paths work for images and models where the API accepts a URL or data URI
 (`--image-url`, `--image-file`, `--image-urls`, `--model-url`, …).
@@ -234,23 +256,32 @@ Resource families:
 | Group | Commands |
 |-------|----------|
 | generation | `text-to-3d`, `image-to-3d`, `multi-image-to-3d` |
-| postprocess | `remesh`, `convert`, `resize`, `uv-unwrap`, `retexture`, `rigging`, `animation` |
+| postprocess | `remesh`, `convert`, `resize`, `uv-unwrap`, `retexture`, `rigging`, `animation`, `text-to-motion` |
 | image | `text-to-image`, `image-to-image` |
-| print | `print multi-color`, `print analyze`, `print repair` |
-| creative-lab | `creative-lab <product> prototype\|build` |
-| account | `balance` |
+| print | `print multi-color`, `print analyze`, `print repair`, `print split` |
+| creative-lab | `creative-lab <product> prototype\|build`; `fidget-collapsible` is a single stage |
+| account | `balance`, `usage list` |
+
+Creative Lab products: `keychain`, `fridge-magnet`, `figure`, `vinyl-figure`, `brick-figure`, `lamp`, `keycap`, `fidget-pixel`, `fidget-collapsible`.
 
 Notes:
 
-- **Rigging / animation** have no documented list endpoint (`list` is omitted).
-- Asset discovery covers `model_urls`, `image_urls`, nested `result.*`, and **`texture_urls`** PBR maps (`base_color`, `normal`, …).
+- Rigging and animation both support `list`.
+- `list --sort` sends `sort_by` (default on the API is `-created_at`).
+- Asset discovery covers `model_urls`, `image_urls`, nested `result.*_url` (including animation and text-to-motion clips), and **`texture_urls`** PBR maps (`base_color`, `normal`, …).
 
 ## Image models / animation library
 
 ```bash
 meshy text-to-image models
 meshy animation library
+meshy animation library --category Fighting --search walk
+meshy usage list --start 2026-08-01T00:00:00Z --endpoint image-to-3d,text-to-3d-refine
 ```
+
+Image `ai_model` values: `nano-banana`, `nano-banana-2`, `nano-banana-2-lite`, `nano-banana-pro`, `gpt-image-2`, `gpt-image-2-5-flare`, `gpt-image-2-5-sunburst`.
+
+The animation catalog is `GET /openapi/v1/animations/library` and requires an API key.
 
 ## Sessions & tags
 
@@ -270,6 +301,7 @@ meshy tasks check --session my-batch
 | `--db` | SQLite path |
 | `--profile` | Built-in or user profile |
 | `--session` / `--tag` | Local tracking |
+| `--metadata` | `X-Meshy-Metadata` `key=value` on create (Studio/Enterprise; ignored by Creative Lab) |
 | `--stream` | Prefer SSE wait over polling |
 | `--poll-interval` / `--wait-timeout` | Wait tuning |
 | `--json` / `--quiet` | Output control |

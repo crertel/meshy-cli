@@ -15,17 +15,18 @@ import (
 
 // App holds shared CLI state.
 type App struct {
-	FlagAPIKey  string
-	FlagBaseURL string
-	FlagDB      string
-	FlagProfile string
-	JSON        bool
-	Quiet       bool
+	FlagAPIKey   string
+	FlagBaseURL  string
+	FlagDB       string
+	FlagProfile  string
+	JSON         bool
+	Quiet        bool
 	PreferStream bool // global --stream: prefer SSE wait over poll
-	Session     string
-	Tags        []string
-	PollEvery   time.Duration
-	WaitTimeout time.Duration
+	Session      string
+	Tags         []string
+	Metadata     []string // X-Meshy-Metadata key=value pairs
+	PollEvery    time.Duration
+	WaitTimeout  time.Duration
 
 	// Injectable for tests
 	HTTPClient *http.Client
@@ -64,11 +65,11 @@ func (app *App) buildRoot() *cobra.Command {
 
 Resource families:
   generation   text-to-3d, image-to-3d, multi-image-to-3d
-  postprocess  remesh, convert, resize, uv-unwrap, retexture, rigging, animation
+  postprocess  remesh, convert, resize, uv-unwrap, retexture, rigging, animation, text-to-motion
   image        text-to-image, image-to-image
-  print        print multi-color | analyze | repair
-  creative-lab creative-lab <product> prototype|build ...
-  account      balance
+  print        print multi-color | analyze | repair | split
+  creative-lab creative-lab <product> prototype|build, or fidget-collapsible
+  account      balance, usage
 
 Shared task verbs:
   create [--sync] [--download] | get | list | delete | wait [--stream] | stream | assets | download
@@ -109,6 +110,7 @@ Examples:
 	root.PersistentFlags().BoolVar(&app.PreferStream, "stream", false, "Prefer SSE stream wait over polling (where supported)")
 	root.PersistentFlags().StringVar(&app.Session, "session", "", "Local session id/name to attach created tasks to")
 	root.PersistentFlags().StringSliceVar(&app.Tags, "tag", nil, "Tag(s) to attach to created/tracked tasks (repeatable)")
+	root.PersistentFlags().StringSliceVar(&app.Metadata, "metadata", nil, "X-Meshy-Metadata key=value (repeatable; Studio/Enterprise). Creative Lab ignores it")
 	root.PersistentFlags().DurationVar(&app.PollEvery, "poll-interval", 5*time.Second, "Polling interval for wait")
 	root.PersistentFlags().DurationVar(&app.WaitTimeout, "wait-timeout", 0, "Max wait duration (0 = no limit)")
 
@@ -123,6 +125,7 @@ Examples:
 	root.AddCommand(app.ezCmd())
 	root.AddCommand(app.profileCmd())
 	root.AddCommand(app.balanceCmd())
+	root.AddCommand(app.usageCmd())
 	root.AddCommand(app.configCmd())
 	root.AddCommand(app.sessionCmd())
 	root.AddCommand(app.tasksCmd())
@@ -192,6 +195,9 @@ func (app *App) setup() error {
 			app.Client.HTTPClient = app.HTTPClient
 		}
 	}
+	if len(app.Metadata) > 0 {
+		app.Client.Metadata = strings.Join(app.Metadata, ",")
+	}
 	return nil
 }
 
@@ -199,15 +205,18 @@ func (app *App) ctx() context.Context {
 	return context.Background()
 }
 
+// Version is the meshy CLI release.
+const Version = "0.2.0"
+
 func (app *App) versionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print version",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if app.JSON {
-				return app.Print.JSONValue(map[string]string{"version": "0.1.0", "name": "meshy"})
+				return app.Print.JSONValue(map[string]string{"version": Version, "name": "meshy"})
 			}
-			fmt.Fprintln(app.Print.Out, "meshy 0.1.0")
+			fmt.Fprintln(app.Print.Out, "meshy "+Version)
 			return nil
 		},
 	}

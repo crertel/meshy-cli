@@ -16,14 +16,16 @@ func (app *App) printGroupCmd() *cobra.Command {
 		Short: "3D printing: multi-color, analyze printability, repair",
 		Long: `3D printing helpers:
   multi-color  Convert models to multi-color 3MF
-  analyze      Analyze FDM printability (free)
-  repair       Repair non-manifold geometry for printing`,
+  analyze      Analyze printability (free)
+  repair       Repair non-manifold geometry for printing
+  split        Split a Meshy 6/7 model into printable parts`,
 	}
 	// Stable order
 	for _, pair := range []struct{ use, res string }{
 		{"multi-color", "print-multi-color"},
 		{"analyze", "print-analyze"},
 		{"repair", "print-repair"},
+		{"split", "print-split"},
 	} {
 		res, ok := api.ResourceByName(pair.res)
 		if !ok {
@@ -40,17 +42,26 @@ func (app *App) creativeLabCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "creative-lab",
 		Short: "Creative Lab products (prototype → build)",
-		Long: `Creative Lab two-stage workflows under product-scoped URLs:
-  keychain | fridge-magnet | figure | vinyl-figure | lamp
+		Long: `Creative Lab workflows under product-scoped URLs:
+  keychain | fridge-magnet | figure | vinyl-figure | brick-figure | lamp | keycap | fidget-pixel
+  fidget-collapsible   single-stage (no prototype/build pair)
 
-Each product supports:
+Two-stage products:
   prototype create|get|list|delete|wait|download
   build     create|get|list|delete|wait|download
 
-Chain build with --input-task-id from a succeeded prototype.`,
+Chain build with --input-task-id from a succeeded prototype.
+Keycap build also needs --candidate-id from the prototype's candidate_ids.
+Fidget-pixel build geometry is --shape, --grid-size, --piece-size-mm, --color-count, --piece-height-mm.`,
 	}
-	for _, product := range []string{"keychain", "fridge-magnet", "figure", "vinyl-figure", "lamp"} {
+	for _, product := range []string{"keychain", "fridge-magnet", "figure", "vinyl-figure", "brick-figure", "lamp", "keycap", "fidget-pixel"} {
 		cmd.AddCommand(app.creativeProductCmd(product))
+	}
+	if res, ok := api.ResourceByName("cl-fidget-collapsible"); ok {
+		sub := app.resourceCmd(res)
+		sub.Use = "fidget-collapsible"
+		sub.Short = res.Description
+		cmd.AddCommand(sub)
 	}
 	return cmd
 }
@@ -95,6 +106,47 @@ func (app *App) balanceCmd() *cobra.Command {
 	}
 	cmd.AddCommand(get)
 	cmd.RunE = get.RunE
+	return cmd
+}
+
+func (app *App) usageCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "usage",
+		Short: "Historic task usage and credit cost (Studio and Enterprise)",
+	}
+	var pageNum, pageSize int
+	var sortBy, start, end, status string
+	var endpoints []string
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List usage records (GET /openapi/v1/usage/tasks)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := RequireAPIKey(app.Client.APIKey); err != nil {
+				return err
+			}
+			rows, err := app.Client.ListUsage(app.ctx(), api.UsageFilter{
+				PageNum:   pageNum,
+				PageSize:  pageSize,
+				SortBy:    sortBy,
+				StartTime: start,
+				EndTime:   end,
+				Endpoints: strings.Join(endpoints, ","),
+				Status:    status,
+			})
+			if err != nil {
+				return err
+			}
+			return app.Print.PrintAny(rows)
+		},
+	}
+	list.Flags().IntVar(&pageNum, "page", 1, "Page number")
+	list.Flags().IntVar(&pageSize, "page-size", 50, "Page size (max 100)")
+	list.Flags().StringVar(&sortBy, "sort", "", "Sort key; created_at is sortable, leading - is descending")
+	list.Flags().StringVar(&start, "start", "", "Window start, RFC 3339 (default: 30 days before --end)")
+	list.Flags().StringVar(&end, "end", "", "Window end, RFC 3339 (default: now)")
+	list.Flags().StringSliceVar(&endpoints, "endpoint", nil, "Endpoint names to include (image-to-3d, animate, …)")
+	list.Flags().StringVar(&status, "status", "", "Terminal status filter (SUCCEEDED, FAILED, …)")
+	cmd.AddCommand(list)
 	return cmd
 }
 

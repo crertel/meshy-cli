@@ -11,17 +11,17 @@ import (
 // Profile is a named bundle of create/download defaults.
 // Explicit flags always win over profile values.
 type Profile struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	Builtin     bool     `json:"builtin,omitempty"`
-	Source      string   `json:"source,omitempty"` // "builtin" | "user"
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Builtin     bool   `json:"builtin,omitempty"`
+	Source      string `json:"source,omitempty"` // "builtin" | "user"
 
 	// Generation defaults (merged into create bodies when unset)
 	AIModel         string `json:"ai_model,omitempty"`
 	ShouldRemesh    *bool  `json:"should_remesh,omitempty"`
 	TargetPolycount int    `json:"target_polycount,omitempty"`
-	ShouldTexture *bool `json:"should_texture,omitempty"`
-	EnablePBR     *bool `json:"enable_pbr,omitempty"`
+	ShouldTexture   *bool  `json:"should_texture,omitempty"`
+	EnablePBR       *bool  `json:"enable_pbr,omitempty"`
 
 	// Download defaults
 	DownloadFormats  []string `json:"download_formats,omitempty"`
@@ -32,7 +32,7 @@ type Profile struct {
 // BuiltinProfiles are the shipped opt-in defaults.
 var BuiltinProfiles = []Profile{
 	{
-		Name: "game-lowpoly", Description: "Realtime / engine: remesh, lower poly, glb only",
+		Name: "game-lowpoly", Description: "Realtime / engine: remesh to ~30k, glb. Not the retired lowpoly model_type; use --model-type smart-topology --ai-model meshy-t2.5 for that",
 		Builtin: true, Source: "builtin",
 		AIModel: "latest", ShouldRemesh: boolPtr(true), TargetPolycount: 30000,
 		EnablePBR: boolPtr(true), DownloadFormats: []string{"glb"},
@@ -47,7 +47,7 @@ var BuiltinProfiles = []Profile{
 		Name: "cinema", Description: "Higher fidelity: more poly, PBR, glb+fbx+texture maps",
 		Builtin: true, Source: "builtin",
 		AIModel: "latest", ShouldRemesh: boolPtr(true), TargetPolycount: 100000,
-		EnablePBR: boolPtr(true),
+		EnablePBR:       boolPtr(true),
 		DownloadFormats: []string{"glb", "fbx"}, DownloadTextures: true,
 	},
 	{

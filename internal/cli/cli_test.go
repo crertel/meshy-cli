@@ -269,7 +269,7 @@ func TestHelpListsResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	help := buf.String()
-	for _, want := range []string{"text-to-3d", "image-to-3d", "remesh", "print", "creative-lab", "balance", "session", "config"} {
+	for _, want := range []string{"text-to-3d", "image-to-3d", "text-to-motion", "remesh", "print", "creative-lab", "balance", "usage", "session", "config"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("help missing %q", want)
 		}
@@ -287,6 +287,33 @@ func TestHelpListsResources(t *testing.T) {
 	for _, want := range []string{"create", "get", "list", "delete", "wait", "download", "assets"} {
 		if !strings.Contains(sub, want) {
 			t.Errorf("image-to-3d help missing %q\n%s", want, sub)
+		}
+	}
+
+	buf.Reset()
+	root = cli.NewRoot()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"--db", dbPath, "rigging", "--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "list") {
+		t.Fatalf("rigging help should include list:\n%s", buf.String())
+	}
+
+	buf.Reset()
+	root = cli.NewRoot()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"--db", dbPath, "creative-lab", "--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	cl := buf.String()
+	for _, want := range []string{"brick-figure", "keycap", "fidget-pixel", "fidget-collapsible"} {
+		if !strings.Contains(cl, want) {
+			t.Errorf("creative-lab help missing %q\n%s", want, cl)
 		}
 	}
 }
@@ -720,5 +747,143 @@ func TestCreateFlagsCoverage(t *testing.T) {
 	}
 	if int(i["decimation_mode"].(float64)) != 2 {
 		t.Fatalf("decimation_mode: %#v", i)
+	}
+}
+
+func TestUpdatedAPIFlags(t *testing.T) {
+	var bodies []map[string]any
+	var meta string
+	mux := http.NewServeMux()
+	capture := func(path string) {
+		mux.HandleFunc("POST "+path, func(w http.ResponseWriter, r *http.Request) {
+			if h := r.Header.Get("X-Meshy-Metadata"); h != "" {
+				meta = h
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode: %v", err)
+			}
+			bodies = append(bodies, body)
+			_ = json.NewEncoder(w).Encode(map[string]string{"result": "task-x"})
+		})
+	}
+	capture("/openapi/v1/print/split")
+	capture("/openapi/v1/text-to-motion")
+	capture("/openapi/v1/animations")
+	capture("/openapi/creative-lab/fidget-pixel/v1/build")
+	capture("/openapi/creative-lab/keychain/v1/prototype")
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	dbPath := filepath.Join(t.TempDir(), "drift.db")
+	run := func(args ...string) {
+		app := &cli.App{Print: &cli.Printer{JSON: true, Out: io.Discard, Err: io.Discard}}
+		full := append([]string{"--api-key", "k", "--base-url", srv.URL, "--db", dbPath, "--json",
+			"--metadata", "user=alex@example.com", "--metadata", "team=fab"}, args...)
+		if err := cli.ExecuteWithApp(app, full); err != nil {
+			t.Fatalf("args %v: %v", args, err)
+		}
+	}
+	run("print", "split", "create",
+		"--input-task-id", "src",
+		"--mode", "by_parts",
+		"--prompt", "head, torso",
+		"--connectors",
+		"--connector-type", "cylinder",
+		"--connector-size", "0.4",
+		"--layout", "on_plate",
+	)
+	run("text-to-motion", "create",
+		"--prompt", "a character waving",
+		"--duration", "3",
+		"--mode", "swift",
+		"--task-name", "wave",
+	)
+	run("animation", "create",
+		"--rig-task-id", "rig-1",
+		"--action-ids", "10,25",
+		"--motion-task-id", "motion-1",
+	)
+	run("creative-lab", "fidget-pixel", "build", "create",
+		"--input-task-id", "proto-1",
+		"--shape", "hex",
+		"--grid-size", "16",
+		"--output-format", "3mf",
+		"--candidate-id", "cand-1",
+	)
+	run("creative-lab", "keychain", "prototype", "create",
+		"--image-url", "https://example.com/a.png",
+	)
+
+	if len(bodies) != 5 {
+		t.Fatalf("creates: %d", len(bodies))
+	}
+	split := bodies[0]
+	if split["mode"] != "by_parts" || split["connectors"] != true || split["layout"] != "on_plate" {
+		t.Fatalf("split: %#v", split)
+	}
+	if split["connector_size"].(float64) != 0.4 {
+		t.Fatalf("connector_size: %#v", split["connector_size"])
+	}
+	motion := bodies[1]
+	if motion["mode"] != "swift" || motion["name"] != "wave" || motion["duration"].(float64) != 3 {
+		t.Fatalf("motion: %#v", motion)
+	}
+	anim := bodies[2]
+	ids, _ := anim["action_ids"].([]any)
+	if len(ids) != 2 || anim["motion_task_id"] != "motion-1" {
+		t.Fatalf("animation: %#v", anim)
+	}
+	pixel := bodies[3]
+	opts, _ := pixel["options"].(map[string]any)
+	out, _ := pixel["output"].(map[string]any)
+	if opts["shape"] != "hex" || int(opts["grid_size"].(float64)) != 16 || out["format"] != "3mf" || pixel["candidate_id"] != "cand-1" {
+		t.Fatalf("pixel: %#v", pixel)
+	}
+	if _, ok := pixel["shape"]; ok {
+		t.Fatalf("shape should be nested, got %#v", pixel)
+	}
+	if meta != "user=alex@example.com,team=fab" {
+		t.Fatalf("metadata header %q", meta)
+	}
+}
+
+func TestAnimationLibraryAndUsageCLI(t *testing.T) {
+	var got []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /openapi/v1/animations/library", func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.URL.RequestURI())
+		if r.Header.Get("Authorization") != "Bearer k" {
+			t.Errorf("auth %q", r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`[{"action_id":92,"name":"Double Combo Attack"}]`))
+	})
+	mux.HandleFunc("GET /openapi/v1/usage/tasks", func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.URL.RequestURI())
+		_ = json.NewEncoder(w).Encode([]any{})
+	})
+	mux.HandleFunc("GET /openapi/v1/rigging", func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.URL.RequestURI())
+		_ = json.NewEncoder(w).Encode([]any{})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	dbPath := filepath.Join(t.TempDir(), "lib.db")
+	run := func(args ...string) {
+		var out bytes.Buffer
+		app := &cli.App{Print: &cli.Printer{JSON: true, Out: &out, Err: io.Discard}}
+		full := append([]string{"--api-key", "k", "--base-url", srv.URL, "--db", dbPath, "--json"}, args...)
+		if err := cli.ExecuteWithApp(app, full); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	run("animation", "library", "--category", "Fighting", "--search", "combo")
+	run("usage", "list", "--start", "2026-08-01T00:00:00Z", "--endpoint", "image-to-3d", "--status", "SUCCEEDED")
+	run("rigging", "list", "--sort", "-created_at", "--page", "2")
+	joined := strings.Join(got, " ")
+	for _, want := range []string{"/openapi/v1/animations/library", "category=Fighting", "search=combo", "/openapi/v1/usage/tasks", "endpoints=image-to-3d", "/openapi/v1/rigging", "sort_by=-created_at"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in %s", want, joined)
+		}
 	}
 }
